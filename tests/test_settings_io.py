@@ -41,3 +41,27 @@ def test_save_and_load(tmp_path):
     path = tmp_path / "config.toml"
     save_settings(settings, path)
     assert load_settings(path) == settings
+
+
+def test_overlay_keeps_new_base_keys(tmp_path):
+    """画面で保存した条件（overlay）に無い項目は config.toml の値が使われる。"""
+    from timetable.loader import load_settings
+
+    overlay = tmp_path / "config.local.toml"
+    overlay.write_text('[rooms]\nindividual_booths = 3\n\n[group]\ncapacity = 4\n', encoding="utf-8")
+    base = load_settings(ROOT / "config.toml")
+    merged = load_settings(ROOT / "config.toml", overlay=overlay)
+    assert merged.individual_booths == 3 and merged.group_capacity == 4
+    assert merged.group_rooms == base.group_rooms and merged.komas == base.komas
+    assert load_settings(ROOT / "config.toml", overlay=tmp_path / "none.toml") == base
+
+
+def test_saved_settings_round_trip_as_overlay(tmp_path):
+    from timetable.loader import load_settings
+
+    s = load_settings(ROOT / "config.toml")
+    s.group_capacity = 4
+    s.komas = make_komas(3, "17:00", 60, 10)
+    overlay = tmp_path / "config.local.toml"
+    save_settings(s, overlay)
+    assert load_settings(ROOT / "config.toml", overlay=overlay) == s
