@@ -11,7 +11,8 @@ import streamlit as st
 
 from timetable.loader import komas_from_sheet, load_settings, parse, read_google_sheet, read_xlsx
 from timetable.model import Koma
-from timetable.output import lessons_table, person_grid, to_xlsx, unassigned_table, write_google_sheet
+from timetable.output import (lessons_table, person_grid, teacher_columns_grid, to_xlsx, unassigned_table,
+                              write_google_sheet)
 from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
 from timetable.solver import solve
 
@@ -160,23 +161,26 @@ total = sum(r.times for r in problem.requests)
 missing = sum(u.missing for u in result.unassigned)
 st.success(f"{result.status}（{elapsed:.1f}秒）：希望 {total} コマ中 {total - missing} コマを配置しました。")
 
-tabs = st.tabs(["全体", "生徒別", "講師別", f"未配置（{missing}）", "授業一覧"])
+tabs = st.tabs(["全体", "講師列", "生徒別", "講師別", f"未配置（{missing}）", "授業一覧"])
 with tabs[0]:
     st.markdown(overview_html(problem, result), unsafe_allow_html=True)
 with tabs[1]:
+    st.dataframe(teacher_columns_grid(problem, result), width="stretch")
+    st.caption("授業のない講師はその曜日に出しません。「予備」は手書き用の空き列です")
+with tabs[2]:
     sid = st.selectbox("生徒", list(problem.students), format_func=lambda k: f"{k} {problem.students[k].name}（{problem.students[k].grade}）")
     st.dataframe(person_grid(problem, result, "student", sid), width="stretch")
     st.caption("－ は空き時間でないコマ")
-with tabs[2]:
+with tabs[3]:
     tid = st.selectbox("講師", list(problem.teachers), format_func=lambda k: f"{k} {problem.teachers[k].name}")
     st.dataframe(person_grid(problem, result, "teacher", tid), width="stretch")
-with tabs[3]:
+with tabs[4]:
     df = unassigned_table(problem, result)
     if df.empty:
         st.info("すべての希望が入りました。")
     else:
         st.dataframe(df, width="stretch", hide_index=True)
-with tabs[4]:
+with tabs[5]:
     st.dataframe(lessons_table(problem, result), width="stretch", hide_index=True)
 
 st.subheader("書き出し")

@@ -93,3 +93,60 @@ def test_same_name_students_are_distinguishable(solved):
     table = lessons_table(problem, result)
     assert table["生徒"].str.contains("（").all() or table.empty
     assert names  # 氏名そのものは変えない
+
+
+def _koma_runs_ok(komas: list[int]) -> bool:
+    return sorted(komas) == list(range(min(komas), max(komas) + 1))
+
+
+def test_lessons_are_consecutive_for_students_and_teachers(solved):
+    problem, result = solved
+    days: dict[tuple[str, str, str], list[int]] = {}
+    for ls in result.lessons:
+        days.setdefault(("t", ls.teacher_id, ls.slot.day), []).append(ls.slot.koma)
+        for sid in ls.student_ids:
+            days.setdefault(("s", sid, ls.slot.day), []).append(ls.slot.koma)
+    order = {k.no: i for i, k in enumerate(problem.settings.komas)}
+    for key, komas in days.items():
+        assert _koma_runs_ok([order[k] for k in komas]), key
+
+
+def test_teacher_columns_grid(solved):
+    from timetable.output import SPARE, teacher_columns_grid
+
+    problem, result = solved
+    grid = teacher_columns_grid(problem, result)
+    assert list(grid.index) == [f"{k.no}限 {k.start}-{k.end}" for k in problem.settings.komas]
+    assert list(dict.fromkeys(d for d, _ in grid.columns)) == problem.settings.days
+    for d in problem.settings.days:
+        cols = [t for day, t in grid.columns if day == d]
+        assert cols[-1] == SPARE and cols.count(SPARE) == 1
+        assert (grid[(d, SPARE)] == "").all()
+        working = {problem.teachers[ls.teacher_id].name for ls in result.lessons if ls.slot.day == d}
+        assert set(cols[:-1]) == working
+        for t in cols[:-1]:
+            assert (grid[(d, t)] != "").any()
+
+
+def test_teacher_columns_grid_day_without_lessons(solved):
+    from timetable.model import Result
+    from timetable.output import SPARE, teacher_columns_grid, to_xlsx
+
+    problem, _ = solved
+    grid = teacher_columns_grid(problem, Result("最適解", [], []))
+    assert list(grid.columns) == [(d, SPARE) for d in problem.settings.days]
+    assert to_xlsx(problem, Result("最適解", [], []))
+
+
+def test_xlsx_has_teacher_columns_sheet(solved):
+    import io
+
+    import openpyxl
+
+    from timetable.output import SHEET_TEACHER_COLUMNS, to_xlsx
+
+    problem, result = solved
+    wb = openpyxl.load_workbook(io.BytesIO(to_xlsx(problem, result)))
+    ws = wb[SHEET_TEACHER_COLUMNS]
+    assert ws.cell(1, 2).value == problem.settings.days[0]
+    assert "予備" in [c.value for c in ws[2]]

@@ -177,26 +177,23 @@ def solve(problem: Problem) -> Result:
                     m.AddImplication(v, wd)
                 penalty_terms.append((w["teacher_work_day"], wd))
 
-    # 生徒の1日の空きコマ：授業のかたまりの数 - 1
+    # 生徒・講師の1日の授業は必ず連続させる（間に空きコマを作らない）
+    # 授業のかたまりの始まりを数え、1日に1つまでにする
     komas = [k.no for k in s.komas]
-    for sid in students:
-        for d in s.days:
-            day_busy = [busy_expr.get((sid, Slot(d, k)), 0) for k in komas]
-            if sum(1 for b in day_busy if not isinstance(b, int)) < 2:
-                continue
-            starts = []
-            for i, b in enumerate(day_busy):
-                prev = day_busy[i - 1] if i > 0 else 0
-                st_v = m.NewBoolVar(f"start_{sid}_{d}_{i}")
-                m.Add(st_v >= b - prev)
-                starts.append(st_v)
-            active = m.NewBoolVar(f"active_{sid}_{d}")
-            m.Add(active <= sum(day_busy))
-            for b in day_busy:
-                m.Add(active >= b)
-            gap = m.NewIntVar(0, len(komas), f"gap_{sid}_{d}")
-            m.Add(gap == sum(starts) - active)
-            penalty_terms.append((w["student_gap"], gap))
+    teacher_expr = {key: sum(vs) for key, vs in teacher_busy.items()}
+    for kind, people, expr in (("s", students, busy_expr), ("t", teachers, teacher_expr)):
+        for pid in people:
+            for d in s.days:
+                day_busy = [expr.get((pid, Slot(d, k)), 0) for k in komas]
+                if sum(1 for b in day_busy if not isinstance(b, int)) < 2:
+                    continue
+                starts = []
+                for i, b in enumerate(day_busy):
+                    prev = day_busy[i - 1] if i > 0 else 0
+                    st_v = m.NewBoolVar(f"start_{kind}_{pid}_{d}_{i}")
+                    m.Add(st_v >= b - prev)
+                    starts.append(st_v)
+                m.Add(sum(starts) <= 1)
 
     m.Maximize(
         w["assigned_lesson"] * sum(assigned_terms)
@@ -275,5 +272,5 @@ def _reason(problem: Problem, r: Request) -> str:
     if len(st.available) < total:
         return f"生徒の空きコマ（{len(st.available)}）が受講回数の合計（{total}）より少ない"
     if r.form == "集団":
-        return "同じクラスの他の生徒と時間が合わなかった、または教室・講師が足りない"
-    return "他の授業とコマ・ブース・講師を取り合って入らなかった"
+        return "同じクラスの他の生徒と時間が合わなかった、教室・講師が足りない、または授業を連続させる条件で入らなかった"
+    return "他の授業とコマ・ブース・講師を取り合った、または授業を連続させる条件で入らなかった"
