@@ -93,25 +93,29 @@ def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet:
     return out
 
 
-def apply_koma_sheet(dfs: dict[str, pd.DataFrame], settings: Settings) -> None:
-    """「コマ設定」シートがあれば設定ファイルのコマ割を上書きする。"""
+def komas_from_sheet(dfs: dict[str, pd.DataFrame]) -> list[Koma] | None:
+    """「コマ設定」シートがあれば、そのコマ割を返す。"""
     if SHEET_KOMA not in dfs:
-        return
+        return None
     df = _clean(dfs[SHEET_KOMA])
     if not {"コマ", "開始", "終了"} <= set(df.columns):
-        return
+        return None
     komas = [Koma(int(r["コマ"]), r["開始"], r["終了"]) for _, r in df.iterrows() if r["コマ"].isdigit()]
-    if komas:
-        settings.komas = komas
+    return komas or None
 
 
-def parse(dfs: dict[str, pd.DataFrame], settings: Settings) -> tuple[Problem | None, list[str]]:
-    """読み込んだシートを検証して Problem にする。2つ目の戻り値はエラー・注意の一覧。"""
+def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
+          use_koma_sheet: bool = True) -> tuple[Problem | None, list[str]]:
+    """読み込んだシートを検証して Problem にする。2つ目の戻り値はエラー・注意の一覧。
+
+    use_koma_sheet が True なら「コマ設定」シートのコマ割で settings を上書きする。
+    """
     errors: list[str] = []
     missing = [s for s in REQUIRED_SHEETS if s not in dfs]
     if missing:
         return None, [f"シート「{s}」がありません。" for s in missing]
-    apply_koma_sheet(dfs, settings)
+    if use_koma_sheet and (komas := komas_from_sheet(dfs)):
+        settings.komas = komas
 
     req_df = _clean(dfs[SHEET_STUDENT_REQ])
     st_av_df = _clean(dfs[SHEET_STUDENT_AVAIL])

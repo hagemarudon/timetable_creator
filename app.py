@@ -6,13 +6,24 @@ import json
 import time
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
-from timetable.loader import load_settings, parse, read_google_sheet, read_xlsx
+from timetable.loader import komas_from_sheet, load_settings, parse, read_google_sheet, read_xlsx
+from timetable.model import Koma
 from timetable.output import lessons_table, person_grid, to_xlsx, unassigned_table, write_google_sheet
+from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
 from timetable.solver import solve
 
 ROOT = Path(__file__).parent
+WEIGHT_LABELS = {
+    "assigned_lesson": "授業を1回入れる",
+    "preferred_teacher": "希望講師に当てる",
+    "same_teacher": "個別は毎回同じ講師にする",
+    "same_day_repeat": "同じ科目を同じ日に固めない",
+    "teacher_work_day": "講師の出勤日を少なくする",
+    "student_gap": "生徒の空きコマを作らない",
+}
 COLORS = {"英語": "#dbeafe", "数学": "#fee2e2", "物理": "#dcfce7", "化学": "#fef9c3", "国語": "#f3e8ff"}
 
 
@@ -39,20 +50,13 @@ def overview_html(problem, result) -> str:
         rows.append(f"<tr><th style='white-space:nowrap'>{k.no}限<br><small>{k.start}-{k.end}</small></th>{tds}</tr>")
     return (f"<div style='overflow-x:auto'><table style='border-collapse:collapse;width:100%'>"
             f"<tr><th></th>{head}</tr>{''.join(rows)}</table></div>")
+
+
 st.set_page_config(page_title="塾の時間割作成", layout="wide")
 st.title("塾の時間割作成")
 
-settings = load_settings(ROOT / "config.toml")
-
-with st.sidebar:
-    st.header("条件")
-    settings.individual_booths = st.number_input("個別ブース数", 1, 50, settings.individual_booths)
-    settings.group_rooms = st.number_input("集団教室数", 0, 20, settings.group_rooms)
-    settings.max_students_per_teacher = st.number_input("個別：講師1人あたりの生徒数", 1, 4, settings.max_students_per_teacher)
-    settings.allow_mixed_subjects = st.checkbox("個別で科目の違う生徒を同時に見てよい", settings.allow_mixed_subjects)
-    settings.group_capacity = st.number_input("集団：1クラスの定員", 1, 60, settings.group_capacity)
-    settings.time_limit_seconds = st.number_input("計算時間の上限（秒）", 5, 600, int(settings.time_limit_seconds))
-    st.caption("曜日・コマ割・優先条件の重みは config.toml で変えられます。入力に「コマ設定」シートがあればそちらを使います。")
+CONFIG = ROOT / "config.toml"
+settings = load_settings(CONFIG)
 
 source = st.radio("入力", ["Googleスプレッドシート", "Excelファイル", "サンプルデータ"], horizontal=True)
 dfs = None
@@ -73,10 +77,64 @@ try:
 except Exception as e:  # noqa: BLE001
     st.error(f"読み込めませんでした：{e}")
 
-if dfs is None:
+# 入力に「コマ設定」シートがあれば、そのコマ割を入力欄の初期値にする
+sheet_komas = komas_from_sheet(dfs) if dfs is not None else None
+base_komas = sheet_komas or settings.komas
+k_count, k_start, k_len, k_break = describe_komas(base_komas)
+
+with st.sidebar:
+    st.header("条件")
+
+    st.subheader("曜日とコマ割")
+    settings.days = st.multiselect("開講曜日", ALL_DAYS, default=[d for d in ALL_DAYS if d in settings.days]) or settings.days
+    c1, c2 = st.columns(2)
+    count = c1.number_input("1日のコマ数", 1, 12, k_count)
+    start = c2.text_input("1限の開始", k_start)
+    c1, c2 = st.columns(2)
+    length = c1.number_input("授業の長さ（分）", 10, 240, k_len, step=5)
+    brk = c2.number_input("休憩（分）", 0, 120, k_break, step=5)
+    try:
+        generated = make_komas(count, start, length, brk)
+    except ValueError:
+        st.error("1限の開始は「16:00」の形で入力してください。")
+        st.stop()
+    # 入力欄が元のコマ割と同じなら元の時刻をそのまま使う（コマごとに時刻が不揃いな場合のため）
+    initial = base_komas if (count, start, length, brk) == (k_count, k_start, k_len, k_break) else generated
+    edited = st.data_editor(
+        pd.DataFrame([{"コマ": k.no, "開始": k.start, "終了": k.end} for k in initial]),
+        hide_index=True, disabled=["コマ"], width="stretch", key=f"komas_{count}_{start}_{length}_{brk}",
+    )
+    settings.komas = [Koma(int(r["コマ"]), str(r["開始"]), str(r["終了"])) for _, r in edited.iterrows()]
+    st.caption("時刻はコマごとに表で直せます。生徒・講師の空き時間シートの列（月1, 月2 …）はこのコマ割に合わせてください。")
+    koma_errors = check_komas(settings.komas)
+    for err in koma_errors:
+        st.error(err)
+
+    st.subheader("教室")
+    settings.individual_booths = st.number_input("個別ブース数", 1, 50, settings.individual_booths)
+    settings.group_rooms = st.number_input("集団教室数", 0, 20, settings.group_rooms)
+
+    st.subheader("個別授業")
+    settings.max_students_per_teacher = st.number_input("講師1人が同時に見る生徒数（1 = 1対1）", 1, 4, settings.max_students_per_teacher)
+    settings.allow_mixed_subjects = st.checkbox("科目の違う生徒を同時に見てよい", settings.allow_mixed_subjects)
+
+    st.subheader("集団授業")
+    settings.group_capacity = st.number_input("1クラスの定員", 1, 60, settings.group_capacity)
+
+    with st.expander("優先条件の重み（大きいほど重視）"):
+        w = settings.weights
+        for key, label in WEIGHT_LABELS.items():
+            w[key] = st.number_input(label, 0, 1000, w[key], key=f"w_{key}")
+    settings.time_limit_seconds = st.number_input("計算時間の上限（秒）", 5, 600, int(settings.time_limit_seconds))
+
+    if st.button("この条件を既定にする", disabled=bool(koma_errors)):
+        save_settings(settings, CONFIG)
+        st.success("保存しました。次回からこの条件が最初から入ります。")
+
+if dfs is None or koma_errors:
     st.stop()
 
-problem, notes = parse(dfs, settings)
+problem, notes = parse(dfs, settings, use_koma_sheet=False)
 if notes:
     with st.expander(f"入力の確認（{len(notes)}件）", expanded=problem is None):
         for n in notes:
