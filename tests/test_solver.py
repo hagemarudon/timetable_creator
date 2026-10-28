@@ -150,3 +150,25 @@ def test_xlsx_has_teacher_columns_sheet(solved):
     ws = wb[SHEET_TEACHER_COLUMNS]
     assert ws.cell(1, 2).value == problem.settings.days[0]
     assert "予備" in [c.value for c in ws[2]]
+
+
+def test_view_hides_room_and_student_detail(solved):
+    from timetable.output import View, all_sheets, lessons_table, teacher_columns_grid
+
+    problem, result = solved
+    shown = lessons_table(problem, result)
+    assert "教室" in shown.columns
+    sids = [sid for ls in result.lessons for sid in ls.student_ids]
+    st = problem.students[sids[0]]
+    assert st.id in "".join(shown["生徒"])
+
+    view = View(show_room=False, show_student_detail=False)
+    hidden = lessons_table(problem, result, view)
+    assert "教室" not in hidden.columns
+    text = "".join(hidden["生徒"]) + teacher_columns_grid(problem, result, view).to_string()
+    rooms = {ls.room for ls in result.lessons}
+    assert not any(r in text for r in rooms)
+    assert not any(problem.students[x].id in text for x in sids)
+    sheets = all_sheets(problem, result, view)
+    assert "ID" not in sheets["時間割_生徒別"].columns
+    assert "ID" in sheets["時間割_講師別"].columns
