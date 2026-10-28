@@ -4,12 +4,15 @@ from __future__ import annotations
 import io
 
 import pandas as pd
+from openpyxl.utils import get_column_letter
 
 from .model import Problem, Result
 
 SHEET_ALL = "時間割_全体"
 SHEET_STUDENT = "時間割_生徒別"
 SHEET_TEACHER = "時間割_講師別"
+SHEET_TEACHER_COLUMNS = "時間割_講師列"
+SPARE = "予備"
 SHEET_UNASSIGNED = "未配置"
 
 
@@ -68,6 +71,32 @@ def person_grid(problem: Problem, result: Result, kind: str, pid: str) -> pd.Dat
     return grid
 
 
+def teacher_columns_grid(problem: Problem, result: Result) -> pd.DataFrame:
+    """行 = コマ、列 = 曜日 → その日に授業がある講師 の表。
+
+    授業のない講師の列はその曜日に出さず、各曜日の最後に空の「予備」列を1列入れる。
+    """
+    s = problem.settings
+    index = [_koma_label(problem, k.no) for k in s.komas]
+    cells: dict[tuple[str, str], dict[str, str]] = {}
+    for ls in result.lessons:
+        who = ls.class_name if ls.form == "集団" else "、".join(problem.students[x].label for x in ls.student_ids)
+        cells.setdefault((ls.slot.day, ls.teacher_id), {})[_koma_label(problem, ls.slot.koma)] = \
+            f"{ls.subject}（{ls.form}）{who} / {ls.room}"
+    columns, data = [], []
+    for d in s.days:
+        for tid, t in problem.teachers.items():
+            if (d, tid) in cells:
+                columns.append((d, t.name))
+                data.append([cells[d, tid].get(i, "") for i in index])
+        columns.append((d, SPARE))
+        data.append([""] * len(index))
+    grid = pd.DataFrame(dict(zip(range(len(columns)), data)), index=index)
+    grid.columns = pd.MultiIndex.from_tuples(columns, names=["曜日", "講師"])
+    grid.index.name = "コマ"
+    return grid
+
+
 def unassigned_table(problem: Problem, result: Result) -> pd.DataFrame:
     rows = [{
         "生徒ID": u.request.student_id,
@@ -97,6 +126,7 @@ def all_sheets(problem: Problem, result: Result) -> dict[str, pd.DataFrame]:
         SHEET_ALL: overview_grid(problem, result).reset_index(names="コマ"),
         SHEET_STUDENT: _stacked(problem, result, "student"),
         SHEET_TEACHER: _stacked(problem, result, "teacher"),
+        SHEET_TEACHER_COLUMNS: teacher_columns_grid(problem, result),
         SHEET_UNASSIGNED: unassigned_table(problem, result),
         "授業一覧": lessons_table(problem, result),
     }
@@ -106,11 +136,12 @@ def to_xlsx(problem: Problem, result: Result) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         for name, df in all_sheets(problem, result).items():
-            df.to_excel(xw, sheet_name=name, index=False)
+            # 曜日と講師の2段の見出しは、コマを行の見出しにして書く（Excel で曜日がまとまる）
+            df.to_excel(xw, sheet_name=name, index=isinstance(df.columns, pd.MultiIndex))
             ws = xw.sheets[name]
-            for col in ws.columns:
+            for col in ws.iter_cols():
                 width = max((len(str(c.value or "")) for c in col), default=4)
-                ws.column_dimensions[col[0].column_letter].width = min(60, max(8, width * 1.6))
+                ws.column_dimensions[get_column_letter(col[0].column)].width = min(60, max(8, width * 1.6))
     return buf.getvalue()
 
 
@@ -127,4 +158,11 @@ def write_google_sheet(problem: Problem, result: Result, url: str, credentials_j
     for name, df in all_sheets(problem, result).items():
         ws = existing.get(name) or sh.add_worksheet(name, rows=max(len(df) + 5, 20), cols=max(len(df.columns) + 2, 10))
         ws.clear()
-        ws.update([df.columns.tolist()] + df.astype(str).values.tolist())
+        if isinstance(df.columns, pd.MultiIndex):
+            # 2段の見出しは、曜日の行と講師の行に分けて書く
+            header = [[df.index.name or ""] + [c[0] for c in df.columns],
+                      [""] + [c[1] for c in df.columns]]
+            body = [[i] + row for i, row in zip(df.index, df.astype(str).values.tolist())]
+            ws.update(header + body)
+        else:
+            ws.update([df.columns.tolist()] + df.astype(str).values.tolist())
