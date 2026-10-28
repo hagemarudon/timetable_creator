@@ -79,3 +79,17 @@ def test_times_and_teacher_limit(solved):
     for tid, n in load.items():
         mx = problem.teachers[tid].max_komas
         assert mx is None or n <= mx
+
+
+def test_same_name_students_are_distinguishable(solved):
+    from timetable.output import lessons_table
+
+    problem, result = solved
+    names = [s.name for s in problem.students.values()]
+    labels = [s.label for s in problem.students.values()]
+    assert len(set(labels)) == len(labels)
+    for s in problem.students.values():
+        assert s.id in s.label and s.grade in s.label
+    table = lessons_table(problem, result)
+    assert table["生徒"].str.contains("（").all() or table.empty
+    assert names  # 氏名そのものは変えない

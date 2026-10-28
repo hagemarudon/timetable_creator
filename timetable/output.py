@@ -29,7 +29,7 @@ def lessons_table(problem: Problem, result: Result) -> pd.DataFrame:
             "科目": ls.subject,
             "クラス": ls.class_name,
             "講師": problem.teachers[ls.teacher_id].name,
-            "生徒": "、".join(problem.students[sid].name for sid in ls.student_ids),
+            "生徒": "、".join(problem.students[sid].label for sid in ls.student_ids),
             "人数": len(ls.student_ids),
         })
     return pd.DataFrame(rows, columns=["曜日", "コマ", "教室", "形式", "科目", "クラス", "講師", "生徒", "人数"])
@@ -42,7 +42,7 @@ def overview_grid(problem: Problem, result: Result) -> pd.DataFrame:
     for ls in result.lessons:
         t = problem.teachers[ls.teacher_id].name
         text = (f"[{ls.room}] {ls.class_name}（{t}）{len(ls.student_ids)}名" if ls.form == "集団"
-                else f"[{ls.room}] 個別 {ls.subject}（{t}）{'、'.join(problem.students[x].name for x in ls.student_ids)}")
+                else f"[{ls.room}] 個別 {ls.subject}（{t}）{'、'.join(problem.students[x].label for x in ls.student_ids)}")
         cell = grid.at[_koma_label(problem, ls.slot.koma), ls.slot.day]
         grid.at[_koma_label(problem, ls.slot.koma), ls.slot.day] = (cell + "\n" if cell else "") + text
     return grid
@@ -62,7 +62,7 @@ def person_grid(problem: Problem, result: Result, kind: str, pid: str) -> pd.Dat
                 subj = ls.student_subjects.get(pid, ls.subject)
                 text = f"{subj}（{ls.form}）{problem.teachers[ls.teacher_id].name} / {ls.room}"
             else:
-                who = ls.class_name if ls.form == "集団" else "、".join(problem.students[x].name for x in ls.student_ids)
+                who = ls.class_name if ls.form == "集団" else "、".join(problem.students[x].label for x in ls.student_ids)
                 text = f"{ls.subject}（{ls.form}）{who} / {ls.room}"
             grid.at[_koma_label(problem, ls.slot.koma), ls.slot.day] = text
     return grid
