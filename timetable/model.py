@@ -31,6 +31,11 @@ class Student:
     grade: str
     available: set[Slot] = field(default_factory=set)
 
+    @property
+    def label(self) -> str:
+        """同姓同名でも見分けられる表示名（例：木村悠真（高1・S015））。"""
+        return f"{self.name}（{self.grade}・{self.id}）"
+
 
 @dataclass
 class Teacher:

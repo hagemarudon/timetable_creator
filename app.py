@@ -36,7 +36,7 @@ def overview_html(problem, result) -> str:
         if ls.form == "集団":
             body = f"<b>{ls.class_name}</b> 集団<br>{t}・{len(ls.student_ids)}名"
         else:
-            names = "、".join(problem.students[x].name for x in ls.student_ids)
+            names = "、".join(problem.students[x].label for x in ls.student_ids)
             body = f"<b>{ls.subject}</b> 個別<br>{t}／{names}"
         color = COLORS.get(ls.subject.split("・")[0], "#eee")
         cells.setdefault(ls.slot, []).append(
