@@ -11,7 +11,7 @@ import streamlit as st
 
 from timetable.loader import komas_from_sheet, load_settings, parse, read_google_sheet, read_xlsx
 from timetable.model import Koma
-from timetable.output import lessons_table, person_grid, to_xlsx, unassigned_table, write_google_sheet
+from timetable.output import lessons_table, person_grid, student_names, to_xlsx, unassigned_table, write_google_sheet
 from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
 from timetable.solver import solve
 
@@ -36,7 +36,7 @@ def overview_html(problem, result) -> str:
         if ls.form == "集団":
             body = f"<b>{ls.class_name}</b> 集団<br>{t}・{len(ls.student_ids)}名"
         else:
-            names = "、".join(problem.students[x].name for x in ls.student_ids)
+            names = student_names(problem, ls.student_ids)
             body = f"<b>{ls.subject}</b> 個別<br>{t}／{names}"
         color = COLORS.get(ls.subject.split("・")[0], "#eee")
         cells.setdefault(ls.slot, []).append(
