@@ -11,8 +11,8 @@ import streamlit as st
 
 from timetable.loader import komas_from_sheet, load_settings, parse, read_google_sheet, read_xlsx
 from timetable.model import Koma
-from timetable.output import (lessons_table, person_grid, teacher_columns_grid, to_xlsx, unassigned_table,
-                              write_google_sheet)
+from timetable.output import (View, lessons_table, person_grid, student_name, teacher_columns_grid, to_xlsx,
+                              unassigned_table, write_google_sheet)
 from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
 from timetable.solver import solve
 
@@ -28,7 +28,7 @@ WEIGHT_LABELS = {
 COLORS = {"英語": "#dbeafe", "数学": "#fee2e2", "物理": "#dcfce7", "化学": "#fef9c3", "国語": "#f3e8ff"}
 
 
-def overview_html(problem, result) -> str:
+def overview_html(problem, result, view: View) -> str:
     """曜日×コマの全体表。1つの授業を科目色のカードで並べる。"""
     s = problem.settings
     cells = {}
@@ -37,12 +37,13 @@ def overview_html(problem, result) -> str:
         if ls.form == "集団":
             body = f"<b>{ls.class_name}</b> 集団<br>{t}・{len(ls.student_ids)}名"
         else:
-            names = "、".join(problem.students[x].label for x in ls.student_ids)
+            names = "、".join(student_name(problem, x, view) for x in ls.student_ids)
             body = f"<b>{ls.subject}</b> 個別<br>{t}／{names}"
         color = COLORS.get(ls.subject.split("・")[0], "#eee")
+        room = f'<span style="opacity:.6">{ls.room}</span> ' if view.show_room else ""
         cells.setdefault(ls.slot, []).append(
             f'<div style="background:{color};color:#111;border-radius:6px;padding:4px 6px;margin:3px 0;font-size:12px">'
-            f'<span style="opacity:.6">{ls.room}</span> {body}</div>')
+            f'{room}{body}</div>')
     head = "".join(f"<th style='min-width:170px'>{d}</th>" for d in s.days)
     rows = []
     for k in s.komas:
@@ -161,37 +162,42 @@ total = sum(r.times for r in problem.requests)
 missing = sum(u.missing for u in result.unassigned)
 st.success(f"{result.status}（{elapsed:.1f}秒）：希望 {total} コマ中 {total - missing} コマを配置しました。")
 
+# 表示の切り替えは画面の表と書き出し（Excel・スプレッドシート）の両方に効く
+c1, c2, _ = st.columns([1, 1, 2])
+view = View(show_room=c1.toggle("教室を表示", True),
+            show_student_detail=c2.toggle("生徒の学年とIDを表示", True))
+
 tabs = st.tabs(["全体", "講師列", "生徒別", "講師別", f"未配置（{missing}）", "授業一覧"])
 with tabs[0]:
-    st.markdown(overview_html(problem, result), unsafe_allow_html=True)
+    st.markdown(overview_html(problem, result, view), unsafe_allow_html=True)
 with tabs[1]:
-    st.dataframe(teacher_columns_grid(problem, result), width="stretch")
+    st.dataframe(teacher_columns_grid(problem, result, view), width="stretch")
     st.caption("授業のない講師はその曜日に出しません。「予備」は手書き用の空き列です")
 with tabs[2]:
     sid = st.selectbox("生徒", list(problem.students), format_func=lambda k: f"{k} {problem.students[k].name}（{problem.students[k].grade}）")
-    st.dataframe(person_grid(problem, result, "student", sid), width="stretch")
+    st.dataframe(person_grid(problem, result, "student", sid, view), width="stretch")
     st.caption("－ は空き時間でないコマ")
 with tabs[3]:
     tid = st.selectbox("講師", list(problem.teachers), format_func=lambda k: f"{k} {problem.teachers[k].name}")
-    st.dataframe(person_grid(problem, result, "teacher", tid), width="stretch")
+    st.dataframe(person_grid(problem, result, "teacher", tid, view), width="stretch")
 with tabs[4]:
-    df = unassigned_table(problem, result)
+    df = unassigned_table(problem, result, view)
     if df.empty:
         st.info("すべての希望が入りました。")
     else:
         st.dataframe(df, width="stretch", hide_index=True)
 with tabs[5]:
-    st.dataframe(lessons_table(problem, result), width="stretch", hide_index=True)
+    st.dataframe(lessons_table(problem, result, view), width="stretch", hide_index=True)
 
 st.subheader("書き出し")
-st.download_button("Excelでダウンロード", to_xlsx(problem, result), "時間割.xlsx", type="primary")
+st.download_button("Excelでダウンロード", to_xlsx(problem, result, view), "時間割.xlsx", type="primary")
 if source == "Googleスプレッドシート" and sheet_url:
     with st.expander("元のGoogleスプレッドシートに書き込む"):
         st.caption("Google Cloud のサービスアカウントの鍵（JSON）が必要です。スプレッドシートをそのメールアドレスに編集者として共有してください。")
         key = st.file_uploader("サービスアカウントの鍵（JSON）", type=["json"])
         if key and st.button("スプレッドシートに書き込む"):
             try:
-                write_google_sheet(problem, result, sheet_url, json.loads(key.getvalue()))
+                write_google_sheet(problem, result, sheet_url, json.loads(key.getvalue()), view)
                 st.success("「時間割_全体」などのシートを書き込みました。")
             except Exception as e:  # noqa: BLE001
                 st.error(f"書き込めませんでした：{e}")
