@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from timetable.loader import komas_from_sheet, load_settings, parse, read_google_sheet, read_xlsx
+from timetable.loader import LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_google_sheet, read_xlsx
 from timetable.model import Koma
 from timetable.output import (View, lessons_table, person_grid, student_name, teacher_columns_grid, to_xlsx,
                               unassigned_table, write_google_sheet)
@@ -58,7 +58,9 @@ st.set_page_config(page_title="塾の時間割作成", layout="wide")
 st.title("塾の時間割作成")
 
 CONFIG = ROOT / "config.toml"
-settings = load_settings(CONFIG)
+# 画面で保存した条件は Git で管理しない別ファイルに置く（自動pullとぶつからないように）
+LOCAL_CONFIG = ROOT / LOCAL_CONFIG_NAME
+settings = load_settings(CONFIG, overlay=LOCAL_CONFIG)
 
 source = st.radio("入力", ["Googleスプレッドシート", "Excelファイル", "サンプルデータ"], horizontal=True)
 dfs = None
@@ -130,7 +132,7 @@ with st.sidebar:
     settings.time_limit_seconds = st.number_input("計算時間の上限（秒）", 5, 600, int(settings.time_limit_seconds))
 
     if st.button("この条件を既定にする", disabled=bool(koma_errors)):
-        save_settings(settings, CONFIG)
+        save_settings(settings, LOCAL_CONFIG)
         st.success("保存しました。次回からこの条件が最初から入ります。")
 
 if dfs is None or koma_errors:

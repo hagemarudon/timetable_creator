@@ -21,9 +21,28 @@ REQUIRED_SHEETS = [SHEET_STUDENT_REQ, SHEET_STUDENT_AVAIL, SHEET_TEACHER, SHEET_
 MARKS = {"○", "◯", "〇", "o", "O", "1", "true", "TRUE", "True", "✓", "✔"}
 
 
-def load_settings(path: str | Path) -> Settings:
+LOCAL_CONFIG_NAME = "config.local.toml"
+
+
+def _merge(base: dict, over: dict) -> dict:
+    """over の値で base を上書きする（表は中まで、配列は丸ごと置き換え）。"""
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def load_settings(path: str | Path, overlay: str | Path | None = None) -> Settings:
+    """設定ファイルを読む。overlay のファイルがあれば、その値で上書きする。
+
+    overlay には画面で保存した条件（config.local.toml、Git管理外）を渡す。
+    config.toml に新しい項目が増えても、overlay に無い項目は config.toml の値が使われる。
+    """
     with open(path, "rb") as f:
         c = tomllib.load(f)
+    if overlay is not None and Path(overlay).exists():
+        with open(overlay, "rb") as f:
+            c = _merge(c, tomllib.load(f))
     return Settings(
         days=list(c["days"]),
         komas=[Koma(int(k["no"]), str(k["start"]), str(k["end"])) for k in c["komas"]],

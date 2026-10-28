@@ -7,13 +7,14 @@ import sys
 import time
 from pathlib import Path
 
-from timetable.loader import load_settings, parse, read_google_sheet, read_xlsx
+from timetable.loader import LOCAL_CONFIG_NAME, load_settings, parse, read_google_sheet, read_xlsx
 from timetable.output import to_xlsx, unassigned_table
 from timetable.solver import solve
 
 
 def main(src: str, dst: str) -> int:
-    settings = load_settings(Path(__file__).with_name("config.toml"))
+    here = Path(__file__)
+    settings = load_settings(here.with_name("config.toml"), overlay=here.with_name(LOCAL_CONFIG_NAME))
     dfs = read_google_sheet(src) if src.startswith("http") else read_xlsx(src)
     problem, notes = parse(dfs, settings)
     for n in notes:

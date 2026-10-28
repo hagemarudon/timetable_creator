@@ -55,7 +55,7 @@ def check_komas(komas: list[Koma]) -> list[str]:
 
 
 def save_settings(settings: Settings, path: str | Path) -> None:
-    """条件を config.toml の形で保存する（次回からの初期値になる）。"""
+    """条件を config.toml と同じ形で保存する（config.local.toml に保存し、次回からの初期値になる）。"""
     days = ", ".join(f'"{d}"' for d in settings.days)
     lines = [
         "# 塾の時間割作成の設定（画面の「この条件を既定にする」で保存）",
