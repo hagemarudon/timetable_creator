@@ -21,12 +21,12 @@ SHEET_UNASSIGNED = "未配置"
 class View:
     """表示の切り替え。画面と書き出しの両方で使う。"""
     show_room: bool = True
-    show_student_detail: bool = True  # 生徒名に学年とIDを添える
+    show_detail: bool = True  # 生徒の学年と、生徒・講師のIDを出す
 
 
 def student_name(problem: Problem, sid: str, view: View = View()) -> str:
     st = problem.students[sid]
-    return st.label if view.show_student_detail else st.name
+    return st.label if view.show_detail else st.name
 
 
 def _students(problem: Problem, sids, view: View) -> str:
@@ -133,7 +133,7 @@ def unassigned_table(problem: Problem, result: Result, view: View = View()) -> p
         "理由": u.reason,
     } for u in result.unassigned]
     columns = ["生徒ID", "氏名", "科目", "形式", "希望回数", "入らなかった回数", "理由"]
-    if not view.show_student_detail:
+    if not view.show_detail:
         columns.remove("生徒ID")
     return pd.DataFrame(rows, columns=columns)
 
@@ -144,7 +144,7 @@ def _stacked(problem: Problem, result: Result, kind: str, view: View) -> pd.Data
     for pid, p in people.items():
         g = person_grid(problem, result, kind, pid, view).reset_index(names="コマ")
         g.insert(0, "氏名", p.name)
-        if kind == "teacher" or view.show_student_detail:
+        if view.show_detail:
             g.insert(0, "ID", pid)
         frames.append(g)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
