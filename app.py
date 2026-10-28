@@ -165,7 +165,7 @@ st.success(f"{result.status}（{elapsed:.1f}秒）：希望 {total} コマ中 {t
 # 表示の切り替えは画面の表と書き出し（Excel・スプレッドシート）の両方に効く
 c1, c2, _ = st.columns([1, 1, 2])
 view = View(show_room=c1.toggle("教室を表示", True),
-            show_student_detail=c2.toggle("生徒の学年とIDを表示", True))
+            show_detail=c2.toggle("学年とIDを表示", True))
 
 tabs = st.tabs(["全体", "講師列", "生徒別", "講師別", f"未配置（{missing}）", "授業一覧"])
 with tabs[0]:
@@ -174,11 +174,13 @@ with tabs[1]:
     st.dataframe(teacher_columns_grid(problem, result, view), width="stretch")
     st.caption("授業のない講師はその曜日に出しません。「予備」は手書き用の空き列です")
 with tabs[2]:
-    sid = st.selectbox("生徒", list(problem.students), format_func=lambda k: f"{k} {problem.students[k].name}（{problem.students[k].grade}）")
+    sid = st.selectbox("生徒", list(problem.students), format_func=lambda k: f"{k} {problem.students[k].name}（{problem.students[k].grade}）" if view.show_detail
+                       else problem.students[k].name)
     st.dataframe(person_grid(problem, result, "student", sid, view), width="stretch")
     st.caption("－ は空き時間でないコマ")
 with tabs[3]:
-    tid = st.selectbox("講師", list(problem.teachers), format_func=lambda k: f"{k} {problem.teachers[k].name}")
+    tid = st.selectbox("講師", list(problem.teachers), format_func=lambda k: f"{k} {problem.teachers[k].name}" if view.show_detail
+                       else problem.teachers[k].name)
     st.dataframe(person_grid(problem, result, "teacher", tid, view), width="stretch")
 with tabs[4]:
     df = unassigned_table(problem, result, view)

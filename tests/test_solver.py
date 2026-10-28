@@ -162,7 +162,7 @@ def test_view_hides_room_and_student_detail(solved):
     st = problem.students[sids[0]]
     assert st.id in "".join(shown["生徒"])
 
-    view = View(show_room=False, show_student_detail=False)
+    view = View(show_room=False, show_detail=False)
     hidden = lessons_table(problem, result, view)
     assert "教室" not in hidden.columns
     text = "".join(hidden["生徒"]) + teacher_columns_grid(problem, result, view).to_string()
@@ -171,4 +171,5 @@ def test_view_hides_room_and_student_detail(solved):
     assert not any(problem.students[x].id in text for x in sids)
     sheets = all_sheets(problem, result, view)
     assert "ID" not in sheets["時間割_生徒別"].columns
-    assert "ID" in sheets["時間割_講師別"].columns
+    assert "ID" not in sheets["時間割_講師別"].columns
+    assert "ID" in all_sheets(problem, result)["時間割_講師別"].columns
