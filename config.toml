@@ -1,0 +1,55 @@
+# 塾の時間割作成の設定
+# 未確定の項目は仮の値です。塾の実情に合わせて書き換えてください。
+
+# 開講曜日
+days = ["月", "火", "水", "木", "金", "土"]
+
+# コマ割（番号, 開始, 終了）
+[[komas]]
+no = 1
+start = "16:00"
+end = "17:20"
+
+[[komas]]
+no = 2
+start = "17:30"
+end = "18:50"
+
+[[komas]]
+no = 3
+start = "19:00"
+end = "20:20"
+
+[[komas]]
+no = 4
+start = "20:30"
+end = "21:50"
+
+[rooms]
+# 個別授業のブース数（同じコマで同時に個別授業ができる講師の数）
+individual_booths = 6
+# 集団授業の教室数
+group_rooms = 2
+
+[individual]
+# 講師1人が同じコマで同時に見られる生徒の最大数（1 = 1対1, 2 = 1対2）
+max_students_per_teacher = 2
+# 同じコマで講師が見る生徒同士の科目が違ってもよいか
+allow_mixed_subjects = true
+
+[group]
+# 集団授業1クラスの定員
+capacity = 12
+
+[solver]
+# 計算時間の上限（秒）
+time_limit_seconds = 30
+
+# 優先条件の重み（大きいほど重視）
+[weights]
+assigned_lesson = 100      # 授業を1回入れられたら加点
+preferred_teacher = 8      # 希望講師に当たったら加点
+same_teacher = 10          # 個別で講師が2人目以上になったら減点（毎回同じ講師にしたい）
+same_day_repeat = 6        # 同じ科目が同じ日に2回入ったら減点
+teacher_work_day = 3       # 講師の出勤日1日ごとに減点（出勤日をまとめたい）
+student_gap = 2            # 生徒の1日の授業の間に空きコマができたら減点
