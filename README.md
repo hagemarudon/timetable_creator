@@ -38,6 +38,12 @@ Googleスプレッドシートで作った場合も「ファイル → ダウン
 
 見本は `sample/サンプル入力.xlsx`（架空の生徒30人・講師8人）です。
 
+## Googleフォームで希望を集める
+
+生徒・講師に Google フォームで希望を答えてもらい、その回答から上の5シートを自動で作れます。
+フォームを作るスクリプトと手順は [google_forms/README.md](google_forms/README.md) にあります。
+まとめたスプレッドシートは、そのまま下の「Googleスプレッドシートから読む」で読み込めます。
+
 ## Googleスプレッドシートから読む（Googleログイン）
 
 Googleでログインすると、その人が見られるスプレッドシートを、共有設定を変えずにURLから読み込めます。
@@ -119,6 +125,7 @@ Googleスプレッドシートから読んだときは、ログインしたま�
 - `timetable/loader.py` 設定と入力（Excel）の読み込み・検証
 - `timetable/template.py` 入力用Excelの雛形
 - `timetable/google_sheets.py` Googleログイン（OAuth）とスプレッドシートの読み書き
+- `google_forms/forms.gs` 希望を集める Google フォームを作り、回答を入力シートにまとめる（Apps Script）
 - `timetable/solver.py` 時間割の自動作成（OR-Tools）
 - `timetable/output.py` 表の作成と書き出し
 - `timetable/settings_io.py` 画面で入力した条件（コマ割の生成・確認・保存）
