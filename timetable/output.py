@@ -8,6 +8,7 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 from .model import Problem, Result
+from .previous import SHEET_PREVIOUS, previous_sheet
 
 SHEET_ALL = "時間割_全体"
 SHEET_STUDENT = "時間割_生徒別"
@@ -188,4 +189,7 @@ def to_xlsx(problem: Problem, result: Result, view: View = View()) -> bytes:
             for col in ws.iter_cols():
                 width = max((len(str(c.value or "")) for c in col), default=4)
                 ws.column_dimensions[get_column_letter(col[0].column)].width = min(60, max(8, width * 1.6))
+        # 次の作り直しで「今の時間割をなるべく変えない」ために読む記録（表示の切り替えに関係なくIDで持つ）
+        previous_sheet(result).to_excel(xw, sheet_name=SHEET_PREVIOUS, index=False)
+        xw.sheets[SHEET_PREVIOUS].sheet_state = "hidden"
     return buf.getvalue()

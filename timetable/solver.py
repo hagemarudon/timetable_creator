@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from ortools.sat.python import cp_model
 
 from .model import Lesson, Problem, Request, Result, Slot, Unassigned
+from .previous import PrevLesson
 
 
 def _group_key(problem: Problem, r: Request) -> tuple[str, str]:
@@ -29,13 +30,20 @@ RELAXATIONS = {
 }
 
 
-def solve(problem: Problem, relax: frozenset[str] = frozenset(), time_limit: float | None = None) -> Result:
-    """時間割を組む。relax に RELAXATIONS のキーを入れると、その必須条件を外して解く。"""
+def solve(problem: Problem, relax: frozenset[str] = frozenset(), time_limit: float | None = None,
+          previous: list[PrevLesson] | None = None) -> Result:
+    """時間割を組む。relax に RELAXATIONS のキーを入れると、その必須条件を外して解く。
+
+    previous（前回の時間割）を渡すと、前回と同じコマ・同じ講師に入れた授業に加点する。
+    """
     s = problem.settings
     w = s.weights
     slots = s.slots
     students, teachers = problem.students, problem.teachers
     m = cp_model.CpModel()
+    keep = w.get("keep_previous", 0) if previous else 0
+    prev_slot = {(p.student_id, p.subject, p.form, p.slot) for p in previous or []}
+    prev_teacher = {(p.student_id, p.subject, p.form, p.slot, p.teacher_id) for p in previous or []}
 
     # 生徒・講師が各コマで入っている授業の変数
     student_busy: dict[tuple[str, Slot], list] = defaultdict(list)
@@ -65,6 +73,9 @@ def solve(problem: Problem, relax: frozenset[str] = frozenset(), time_limit: flo
                 ind_by_ts_subject[t.id, sl, r.subject].append(v)
                 if r.preferred_teacher == t.id:
                     bonus_terms.append((w["preferred_teacher"], v))
+                if keep and (r.student_id, r.subject, r.form, sl) in prev_slot:
+                    same_t = (r.student_id, r.subject, r.form, sl, t.id) in prev_teacher
+                    bonus_terms.append((keep + (keep // 2 if same_t else 0), v))
             if used_t:
                 # 講師が何人目かを数えるための変数（毎回同じ講師を優先）
                 u = m.NewBoolVar(f"u_{r.index}_{t.id}")
@@ -155,6 +166,8 @@ def solve(problem: Problem, relax: frozenset[str] = frozenset(), time_limit: flo
                     m.Add(a <= sum(gs))
                     student_busy[r.student_id, sl].append(a)
                     assigned_terms.append(a)
+                    if keep and (r.student_id, r.subject, r.form, sl) in prev_slot:
+                        bonus_terms.append((keep, a))
             m.Add(sum(member[r.index, ci] for r in reqs) <= s.group_capacity)
         for r in reqs:
             m.AddExactlyOne(member[r.index, ci] for ci in sec_ids)
