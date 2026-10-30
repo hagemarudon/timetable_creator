@@ -10,7 +10,6 @@ from pathlib import Path
 import pandas as pd
 
 from timetable.loader import load_settings
-from timetable.model import SUBJECTS
 
 random.seed(7)
 settings = load_settings(Path(__file__).with_name("config.toml"))
@@ -19,6 +18,7 @@ slot_labels = [s.label for s in settings.slots]
 LAST = ["佐藤", "鈴木", "高橋", "田中", "伊藤", "渡辺", "山本", "中村", "小林", "加藤", "吉田", "山田", "松本", "井上", "木村"]
 FIRST = ["蓮", "陽翔", "結衣", "葵", "湊", "陽葵", "大和", "凛", "悠真", "美咲", "颯太", "芽依", "樹", "心春", "海斗"]
 GRADES = ["中3", "高1", "高2", "高3"]
+SUBJECTS = ["英語", "数学", "物理", "化学", "国語"]  # サンプルの科目（本番は講師シートの列見出しで決まる）
 
 
 def name(i):

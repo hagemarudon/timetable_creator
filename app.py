@@ -11,8 +11,8 @@ import streamlit as st
 
 from timetable.loader import LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_google_sheet, read_xlsx
 from timetable.model import Koma
-from timetable.output import (View, lessons_table, person_grid, student_name, teacher_columns_grid, to_xlsx,
-                              unassigned_table, write_google_sheet)
+from timetable.output import (View, lessons_table, person_grid, student_name, subject_colors, teacher_columns_grid,
+                              to_xlsx, unassigned_table, write_google_sheet)
 from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
 from timetable.solver import solve
 
@@ -25,12 +25,12 @@ WEIGHT_LABELS = {
     "teacher_work_day": "講師の出勤日を少なくする",
     "student_gap": "生徒の空きコマを作らない",
 }
-COLORS = {"英語": "#dbeafe", "数学": "#fee2e2", "物理": "#dcfce7", "化学": "#fef9c3", "国語": "#f3e8ff"}
 
 
 def overview_html(problem, result, view: View) -> str:
     """曜日×コマの全体表。1つの授業を科目色のカードで並べる。"""
     s = problem.settings
+    colors = subject_colors(problem.subjects)
     cells = {}
     for ls in result.lessons:
         t = problem.teachers[ls.teacher_id].name
@@ -39,7 +39,7 @@ def overview_html(problem, result, view: View) -> str:
         else:
             names = "、".join(student_name(problem, x, view) for x in ls.student_ids)
             body = f"<b>{ls.subject}</b> 個別<br>{t}／{names}"
-        color = COLORS.get(ls.subject.split("・")[0], "#eee")
+        color = colors.get(ls.subject.split("・")[0], "#eee")
         room = f'<span style="opacity:.6">{ls.room}</span> ' if view.show_room else ""
         cells.setdefault(ls.slot, []).append(
             f'<div style="background:{color};color:#111;border-radius:6px;padding:4px 6px;margin:3px 0;font-size:12px">'
