@@ -60,6 +60,11 @@ def solve(problem: Problem) -> Result:
                 penalty_terms.append((w["same_teacher"], u))
         m.Add(sum(per_req) <= r.times)
         assigned_terms.extend(per_req)
+        for sl in r.fixed:
+            pinned = x.get((r.index, r.preferred_teacher, sl))
+            at_sl = [pinned] if pinned is not None else [v for (ri, _, sl2), v in x.items() if ri == r.index and sl2 == sl]
+            if at_sl:
+                m.Add(sum(at_sl) == 1)
         for d in s.days:
             day_vars = [v for (ri, _, sl), v in x.items() if ri == r.index and sl.day == d]
             if len(day_vars) > 1:
@@ -142,6 +147,10 @@ def solve(problem: Problem) -> Result:
             m.AddExactlyOne(member[r.index, ci] for ci in sec_ids)
             mine = [a for (ri, ci, _), a in att.items() if ri == r.index]
             m.Add(sum(mine) <= r.times)
+            for sl in r.fixed:
+                at_sl = [a for (ri, _, sl2), a in att.items() if ri == r.index and sl2 == sl]
+                if at_sl:
+                    m.Add(sum(at_sl) == 1)
             for d in s.days:
                 day_vars = [a for (ri, _, sl), a in att.items() if ri == r.index and sl.day == d]
                 if len(day_vars) > 1:
@@ -207,7 +216,9 @@ def solve(problem: Problem) -> Result:
     code = solver.Solve(m)
     status = {cp_model.OPTIMAL: "最適解", cp_model.FEASIBLE: "時間内の最良解"}.get(code)
     if status is None:
-        return Result("解けませんでした", [], [Unassigned(r, r.times, "計算が時間内に終わりませんでした") for r in problem.requests])
+        reason = ("固定したコマなどの必須条件を同時に満たせません" if code == cp_model.INFEASIBLE
+                  else "計算が時間内に終わりませんでした")
+        return Result("解けませんでした", [], [Unassigned(r, r.times, reason) for r in problem.requests])
 
     # ---------------- 結果の取り出し ----------------
     lessons: list[Lesson] = []
