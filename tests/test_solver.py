@@ -138,18 +138,51 @@ def test_teacher_columns_grid_day_without_lessons(solved):
     assert to_xlsx(problem, Result("最適解", [], []))
 
 
-def test_xlsx_has_teacher_columns_sheet(solved):
+def test_xlsx_schedule_sheet_like_paper(solved):
+    """最初のシートは紙のスケジュール表の形：曜日→時刻＋講師列、30分刻みの行、授業はコマの行をまとめたマス。"""
+    import datetime
     import io
 
     import openpyxl
 
-    from timetable.output import SHEET_TEACHER_COLUMNS, to_xlsx
+    from timetable.output import SHEET_SCHEDULE, SHEET_TEACHER_COLUMNS, to_xlsx
 
     problem, result = solved
     wb = openpyxl.load_workbook(io.BytesIO(to_xlsx(problem, result)))
-    ws = wb[SHEET_TEACHER_COLUMNS]
-    assert ws.cell(1, 2).value == problem.settings.days[0]
-    assert "予備" in [c.value for c in ws[2]]
+    assert wb.sheetnames[0] == SHEET_SCHEDULE and SHEET_TEACHER_COLUMNS not in wb.sheetnames
+    ws = wb[SHEET_SCHEDULE]
+    days = problem.settings.days
+    assert ws.cell(1, 1).value == days[0]
+    assert ws.cell(3, 1).value == datetime.time(16, 0)
+    assert ws.cell(4, 1).value == datetime.time(16, 30)
+    assert [c.value for c in ws[1] if c.value] == days
+    assert [c.value for c in ws[ws.max_row] if c.value] == days
+    assert [c.value for c in ws[2]].count("予備") == len(days)
+    assert [c.value for c in ws[2]] == [c.value for c in ws[ws.max_row - 1]]
+
+    # 授業の数だけ、3行（80分のコマ）をまとめたマスがある
+    lesson_merges = [m for m in ws.merged_cells.ranges if m.min_row >= 3 and m.min_col == m.max_col]
+    assert len(lesson_merges) == len(result.lessons)
+    assert all(m.max_row - m.min_row == 2 for m in lesson_merges)
+    ls = next(x for x in result.lessons if x.form == "個別")
+    text = "\n".join(str(ws.cell(m.min_row, m.min_col).value) for m in lesson_merges)
+    assert f"{problem.students[ls.student_ids[0]].name}" in text
+
+
+def test_schedule_time_axis_falls_back_when_komas_overlap(solved):
+    from timetable.model import Koma
+    from timetable.output import _rgb, _time_axis
+
+    problem, _ = solved
+    assert _time_axis(problem) == (30, 16 * 60, 22 * 60)
+    komas = problem.settings.komas
+    problem.settings.komas = [Koma(1, "16:00", "17:10"), Koma(2, "17:10", "18:20")]
+    try:
+        assert _time_axis(problem) == (10, 16 * 60, 18 * 60 + 20)
+    finally:
+        problem.settings.komas = komas
+    assert _rgb("#dbeafe") == "DBEAFE"
+    assert len(_rgb("hsl(200, 80%, 90%)")) == 6
 
 
 def test_view_hides_room_and_student_detail(solved):
