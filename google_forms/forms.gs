@@ -14,12 +14,16 @@
 var CONFIG = {
   juku: '〇〇塾',
   days: ['月', '火', '水', '木', '金', '土'],
+  // 授業のコマ（90分）。「コマ設定」シートになり、アプリはこのコマに授業を入れる
   komas: [
-    { no: 1, start: '16:00', end: '17:20' },
-    { no: 2, start: '17:30', end: '18:50' },
-    { no: 3, start: '19:00', end: '20:20' },
-    { no: 4, start: '20:30', end: '21:50' },
+    { no: 1, start: '16:00', end: '17:30' },
+    { no: 2, start: '17:30', end: '19:00' },
+    { no: 3, start: '19:00', end: '20:30' },
+    { no: 4, start: '20:30', end: '22:00' },
   ],
+  // 空き時間の質問の刻み（分）。最初のコマの開始から最後のコマの終了までをこの刻みで聞く。
+  // アプリは、コマの時間にかかる枠すべてに○があるとき、そのコマが空いているとみなす
+  slotMinutes: 30,
   subjects: ['英語', '数学', '物理', '化学', '国語'],
   grades: ['小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3'],
   maxTimesPerWeek: 3, // 生徒が1科目で選べる週の回数の上限
@@ -87,8 +91,9 @@ function makeStudentForm_() {
     .setRows(CONFIG.subjects)
     .setColumns(lessonChoices_());
   form.addCheckboxGridItem().setTitle(Q.studentAvail)
-    .setHelpText('通塾できるコマすべてに○を付けてください。多く付けるほど時間割が組みやすくなります。')
-    .setRows(komaLabels_())
+    .setHelpText('通塾できる時間すべてに○を付けてください（' + CONFIG.slotMinutes + '分ごと）。授業は1回'
+      + lessonMinutes_() + '分なので、続けて○が付いている時間に入ります。多く付けるほど時間割が組みやすくなります。')
+    .setRows(cellLabels_())
     .setColumns(CONFIG.days);
   form.addParagraphTextItem().setTitle(Q.note)
     .setHelpText('希望の先生、同じ日に固めたくない、などがあれば書いてください。');
@@ -106,8 +111,8 @@ function makeTeacherForm_() {
     .setHelpText('上限がなければ空のままで構いません。')
     .setValidation(FormApp.createTextValidation().requireWholeNumber().setHelpText('数字で入力してください').build());
   form.addCheckboxGridItem().setTitle(Q.teacherAvail)
-    .setHelpText('出勤できるコマすべてに○を付けてください。')
-    .setRows(komaLabels_())
+    .setHelpText('出勤できる時間すべてに○を付けてください（' + CONFIG.slotMinutes + '分ごと）。')
+    .setRows(cellLabels_())
     .setColumns(CONFIG.days);
   return form;
 }
@@ -154,11 +159,24 @@ function 入力シートを作る() {
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* エディタから実行したときはログだけ */ }
 }
 
-/** フォームの回答を {time, answers: {見出し: 回答}} の配列にする（古い順）。 */
+/**
+ * フォームの回答を {time, answers: {見出し: 回答}} の配列にする（古い順）。
+ * グリッドの質問は、回答の配列に加えて行の見出しも answers['<見出し>#rows'] に入れる
+ * （フォームの行を手で直していても、見出しの時刻で読めるようにするため）。
+ */
 function readResponses_(formId) {
-  return FormApp.openById(formId).getResponses().map(function (r) {
+  var form = FormApp.openById(formId);
+  var rows = {};
+  form.getItems(FormApp.ItemType.CHECKBOX_GRID).forEach(function (it) {
+    rows[it.getTitle()] = it.asCheckboxGridItem().getRows();
+  });
+  return form.getResponses().map(function (r) {
     var answers = {};
-    r.getItemResponses().forEach(function (ir) { answers[ir.getItem().getTitle()] = ir.getResponse(); });
+    r.getItemResponses().forEach(function (ir) {
+      var title = ir.getItem().getTitle();
+      answers[title] = ir.getResponse();
+      if (rows[title]) answers[title + '#rows'] = rows[title];
+    });
     return { time: r.getTimestamp().getTime(), answers: answers };
   });
 }
@@ -173,7 +191,7 @@ function writeSheet_(ss, name, rows) {
   sh.clear();
   var width = rows[0].length;
   var range = sh.getRange(1, 1, rows.length, width);
-  range.setNumberFormat('@'); // 「月1」や IDを文字のまま入れる
+  range.setNumberFormat('@'); // 「月16:00」や IDを文字のまま入れる
   range.setValues(rows.map(function (r) { return r.map(function (v) { return v == null ? '' : String(v); }); }));
   sh.setFrozenRows(1);
 }
@@ -199,9 +217,42 @@ function lessonChoices_(cfg) {
   return out;
 }
 
+function toMin_(hhmm) {
+  var m = String(hhmm).match(/(\d{1,2}):(\d{2})/);
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+
+function toHhmm_(min) {
+  var m = String(min % 60);
+  return Math.floor(min / 60) + ':' + (m.length < 2 ? '0' + m : m);
+}
+
+function lessonMinutes_(cfg) {
+  cfg = cfg || CONFIG;
+  var k = cfg.komas[0];
+  return toMin_(k.end) - toMin_(k.start);
+}
+
+/** 空き時間の枠の開始（分）。最初のコマの開始から最後のコマの終了まで、slotMinutes 刻み。 */
+function cellStarts_(cfg) {
+  cfg = cfg || CONFIG;
+  var first = Math.min.apply(null, cfg.komas.map(function (k) { return toMin_(k.start); }));
+  var last = Math.max.apply(null, cfg.komas.map(function (k) { return toMin_(k.end); }));
+  var out = [];
+  for (var t = first; t < last; t += cfg.slotMinutes) out.push(t);
+  return out;
+}
+
+/** フォームの空き時間の行の見出し（例：16:00〜16:30）。 */
+function cellLabels_(cfg) {
+  cfg = cfg || CONFIG;
+  return cellStarts_(cfg).map(function (t) { return toHhmm_(t) + '〜' + toHhmm_(t + cfg.slotMinutes); });
+}
+
+/** 空き時間シートの列（例：月16:00）。 */
 function slotLabels_(cfg) {
   var out = [];
-  cfg.days.forEach(function (d) { cfg.komas.forEach(function (k) { out.push(d + k.no); }); });
+  cfg.days.forEach(function (d) { cellStarts_(cfg).forEach(function (t) { out.push(d + toHhmm_(t)); }); });
   return out;
 }
 
@@ -223,13 +274,17 @@ function latestByName_(responses) {
   return order.map(function (k) { return latest[k]; });
 }
 
-/** チェックボックスのグリッド（行=コマ, 列=曜日）の回答を「月1」の集合にする。 */
-function availSet_(grid, cfg) {
+/**
+ * チェックボックスのグリッド（行=時間の枠, 列=曜日）の回答を「月16:00」の集合にする。
+ * rows（フォームの行の見出し）があれば見出しの最初の時刻で、無ければ行の順番で枠を決める。
+ */
+function availSet_(grid, cfg, rows) {
+  var starts = cellStarts_(cfg);
   var set = {};
   (grid || []).forEach(function (cols, i) {
-    var k = cfg.komas[i];
-    if (!k || !cols) return;
-    (Array.isArray(cols) ? cols : [cols]).forEach(function (d) { if (d) set[d + k.no] = true; });
+    var t = rows && rows[i] != null ? toMin_(rows[i]) : starts[i];
+    if (t == null || !cols) return;
+    (Array.isArray(cols) ? cols : [cols]).forEach(function (d) { if (d) set[d + toHhmm_(t)] = true; });
   });
   return set;
 }
@@ -297,7 +352,7 @@ function buildStudentSheets(responses, cfg, previous) {
         keep['希望講師（任意）'] || '', keep['固定（任意）'] || '', count === 0 ? (a[Q.note] || '') : '']);
       count++;
     });
-    var set = availSet_(a[Q.studentAvail], cfg);
+    var set = availSet_(a[Q.studentAvail], cfg, a[Q.studentAvail + '#rows']);
     avail.push([id, name].concat(slots.map(function (s) { return set[s] ? '○' : ''; })));
     if (!count) warnings.push('生徒 ' + name + '：受講したい科目が選ばれていません。');
     if (!Object.keys(set).length) warnings.push('生徒 ' + name + '：通塾できる時間が選ばれていません。');
@@ -325,7 +380,7 @@ function buildTeacherSheets(responses, cfg, previous) {
     teachers.push([id, name]
       .concat(cfg.subjects.map(function (s) { return subjects.indexOf(s) >= 0 ? '○' : ''; }))
       .concat([forms.indexOf('集団') >= 0 ? '○' : '', forms.indexOf('個別') >= 0 ? '○' : '', max]));
-    var set = availSet_(a[Q.teacherAvail], cfg);
+    var set = availSet_(a[Q.teacherAvail], cfg, a[Q.teacherAvail + '#rows']);
     avail.push([id, name].concat(slots.map(function (s) { return set[s] ? '○' : ''; })));
     if (!Object.keys(set).length) warnings.push('講師 ' + name + '：出勤できる時間が選ばれていません。');
   });
@@ -336,6 +391,7 @@ function buildTeacherSheets(responses, cfg, previous) {
 if (typeof module !== 'undefined') {
   module.exports = {
     CONFIG: CONFIG, Q: Q, komaSheet: komaSheet, lessonChoices_: lessonChoices_, komaLabels_: komaLabels_,
+    cellLabels_: cellLabels_,
     buildStudentSheets: buildStudentSheets, buildTeacherSheets: buildTeacherSheets,
   };
 }
