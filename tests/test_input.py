@@ -2,6 +2,8 @@
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import pandas as pd
+
 from timetable import google_sheets as gs
 from timetable.loader import load_settings, parse, read_xlsx
 
@@ -50,3 +52,20 @@ def test_google_values_parse_like_excel():
     p1, _ = parse(xl, load_settings(ROOT / "config.toml"))
     p2, _ = parse(as_values, settings)
     assert p1.requests == p2.requests and set(p1.teachers) == set(p2.teachers)
+
+
+def test_availability_in_30min_cells():
+    """空き時間を30分の枠（「月16:00」）で書くと、コマ（90分）の枠がすべて○のときだけ空きになる。"""
+    from timetable.loader import _read_availability, load_settings
+    from timetable.model import Slot
+
+    settings = load_settings(Path(__file__).parent.parent / "config.toml")
+    cols = ["生徒ID"] + [f"月{h}:{m}" for h in range(16, 22) for m in ("00", "30")]
+    marks = {"月16:00", "月16:30", "月17:00", "月17:30", "月18:00", "月19:00", "月19:30", "月20:00"}
+    df = pd.DataFrame([["S001"] + ["○" if c in marks else "" for c in cols[1:]]], columns=cols)
+    errors: list[str] = []
+    avail = _read_availability(df, "生徒ID", settings, "生徒_空き時間", errors)
+    # 1限（16:00-17:30）と3限（19:00-20:30）は3枠そろう。2限は18:30が空いていない
+    assert avail["S001"] == {Slot("月", 1), Slot("月", 3)}
+    # 月以外の曜日は列が無いので注意は出さない
+    assert errors == []

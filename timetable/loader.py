@@ -89,21 +89,58 @@ def subjects_from_sheet(df: pd.DataFrame) -> list[str]:
             if c and c not in TEACHER_INFO_COLS and not c.startswith("Unnamed")]
 
 
+# 空き時間を30分ごとに書いた列（例：「月16:00」）。Googleフォームの空き時間はこの形でまとめる
+CELL_MINUTES = 30
+CELL_COL = re.compile(r"([月火水木金土日])(\d{1,2}):(\d{2})")
+
+
+def _minutes(hhmm: str) -> int:
+    h, m = hhmm.strip().split(":")
+    return int(h) * 60 + int(m)
+
+
+def _cells(start: str, end: str) -> list[int]:
+    """コマの時間にかかる30分の枠（開始の分）。16:00-17:30 なら 16:00・16:30・17:00 の3枠。"""
+    s, e = _minutes(start), _minutes(end)
+    return list(range(s // CELL_MINUTES * CELL_MINUTES, e, CELL_MINUTES))
+
+
 def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet: str,
                        errors: list[str]) -> dict[str, set[Slot]]:
+    """空き時間を読む。列は「月1」（コマ）か「月16:00」（30分の枠）のどちらでもよい。
+
+    30分の枠で書いた場合は、そのコマの時間にかかる枠すべてに○があればコマが空いているとする。
+    """
     valid = {s.label: s for s in settings.slots}
     slot_cols = [c for c in df.columns if c in valid]
-    if not slot_cols:
-        errors.append(f"「{sheet}」に「月1」のようなコマの列がありません。")
+    cell_cols: dict[tuple[str, int], str] = {}
+    for c in df.columns:
+        if m := CELL_COL.fullmatch(c):
+            cell_cols[m[1], int(m[2]) * 60 + int(m[3])] = c
+    if not slot_cols and not cell_cols:
+        errors.append(f"「{sheet}」に「月1」や「月16:00」のような空き時間の列がありません。")
     unknown = [c for c in df.columns if re.fullmatch(r"[月火水木金土日]\d+", c) and c not in valid]
     if unknown:
         errors.append(f"「{sheet}」の列 {', '.join(unknown)} は設定のコマ割にありません（無視します）。")
+    komas = {k.no: k for k in settings.komas}
+    # 30分の枠で決めるコマ（コマの時間にかかる枠の列がすべてあるもの）
+    by_cells = {sl: [cell_cols[sl.day, t] for t in _cells(komas[sl.koma].start, komas[sl.koma].end)]
+                for sl in settings.slots
+                if cell_cols and all((sl.day, t) in cell_cols
+                                     for t in _cells(komas[sl.koma].start, komas[sl.koma].end))}
+    if cell_cols:
+        days = {d for d, _ in cell_cols}
+        lack = [sl.label for sl in settings.slots if sl.day in days and sl not in by_cells and sl.label not in slot_cols]
+        if lack:
+            errors.append(f"「{sheet}」の30分の枠の列が、コマ {'・'.join(lack)} の時間をすべては含んでいません"
+                          "（そのコマは空いていないものとします）。")
     out: dict[str, set[Slot]] = {}
     for _, row in df.iterrows():
         pid = row.get(id_col, "")
         if not pid:
             continue
-        out[pid] = {valid[c] for c in slot_cols if _marked(row[c])}
+        out[pid] = ({valid[c] for c in slot_cols if _marked(row[c])}
+                    | {sl for sl, cols in by_cells.items() if all(_marked(row[c]) for c in cols)})
     return out
 
 
