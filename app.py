@@ -12,11 +12,11 @@ import streamlit as st
 from timetable import google_sheets as gs
 from timetable.loader import LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_xlsx
 from timetable.model import Koma
-from timetable.output import (View, all_sheets, lessons_table, person_grid, student_name, teacher_columns_grid,
-                              to_xlsx, unassigned_table)
+from timetable.output import (View, all_sheets, lessons_table, person_grid, student_name, subject_colors,
+                              teacher_columns_grid, to_xlsx, unassigned_table)
 from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
 from timetable.solver import solve
-from timetable.template import template_xlsx
+from timetable.template import make_template
 
 ROOT = Path(__file__).parent
 WEIGHT_LABELS = {
@@ -28,12 +28,12 @@ WEIGHT_LABELS = {
     "student_gap": "生徒の空きコマを作らない",
 }
 SRC_EXCEL, SRC_GOOGLE, SRC_SAMPLE = "Excelファイル", "Googleスプレッドシート", "サンプルデータ"
-COLORS = {"英語": "#dbeafe", "数学": "#fee2e2", "物理": "#dcfce7", "化学": "#fef9c3", "国語": "#f3e8ff"}
 
 
 def overview_html(problem, result, view: View) -> str:
     """曜日×コマの全体表。1つの授業を科目色のカードで並べる。"""
     s = problem.settings
+    colors = subject_colors(problem.subjects)
     cells = {}
     for ls in result.lessons:
         t = problem.teachers[ls.teacher_id].name
@@ -42,7 +42,7 @@ def overview_html(problem, result, view: View) -> str:
         else:
             names = "、".join(student_name(problem, x, view) for x in ls.student_ids)
             body = f"<b>{ls.subject}</b> 個別<br>{t}／{names}"
-        color = COLORS.get(ls.subject.split("・")[0], "#eee")
+        color = colors.get(ls.subject.split("・")[0], "#eee")
         room = f'<span style="opacity:.6">{ls.room}</span> ' if view.show_room else ""
         cells.setdefault(ls.slot, []).append(
             f'<div style="background:{color};color:#111;border-radius:6px;padding:4px 6px;margin:3px 0;font-size:12px">'
@@ -102,14 +102,11 @@ if oauth and "code" in st.query_params:
 source = st.radio("入力", [SRC_EXCEL, SRC_GOOGLE, SRC_SAMPLE], horizontal=True, key="source")
 dfs = None
 sheet_url = ""
-template_slot = None
 try:
     if source == SRC_EXCEL:
         up = st.file_uploader("Excelファイル", type=["xlsx"])
         if up:
             dfs = read_xlsx(up.getvalue())
-        # 雛形は左の条件（コマ割）が決まってから作るので、場所だけ取っておく
-        template_slot = st.empty()
         st.caption("Googleスプレッドシートで作った場合は「ファイル → ダウンロード → Microsoft Excel」で保存してアップロードできます。")
     elif source == SRC_GOOGLE:
         if oauth is None:
@@ -137,6 +134,8 @@ except Exception as e:  # noqa: BLE001
     st.error(f"読み込めませんでした：{e}")
     if source == SRC_GOOGLE:
         st.caption("ログインから時間がたつと読めなくなります。ログアウトしてもう一度ログインしてください。")
+# 雛形は左の条件（曜日・コマ割）が決まってから作るので、場所だけ先に取っておく
+template_area = st.container()
 
 # 入力に「コマ設定」シートがあれば、そのコマ割を入力欄の初期値にする
 sheet_komas = komas_from_sheet(dfs) if dfs is not None else None
@@ -192,13 +191,17 @@ with st.sidebar:
         save_settings(settings, LOCAL_CONFIG)
         st.success("保存しました。次回からこの条件が最初から入ります。")
 
-if template_slot is not None and not koma_errors:
-    template_slot.download_button("入力用の雛形をダウンロード", template_xlsx(settings), "時間割_入力.xlsx")
+problem, notes = parse(dfs, settings, use_koma_sheet=False) if dfs is not None and not koma_errors else (None, [])
+if not koma_errors:
+    with template_area.expander("入力用の雛形をダウンロード"):
+        st.caption("左の曜日・コマ割に合わせた空き時間表など、入力の5シートです。○は選択肢から選べます。")
+        keep_people = problem is not None and st.checkbox("読み込んだ生徒・講師のIDと氏名を入れておく", True)
+        st.download_button("雛形をダウンロード", make_template(settings, problem if keep_people else None),
+                           "入力の雛形.xlsx")
 
 if dfs is None or koma_errors:
     st.stop()
 
-problem, notes = parse(dfs, settings, use_koma_sheet=False)
 if notes:
     with st.expander(f"入力の確認（{len(notes)}件）", expanded=problem is None):
         for n in notes:

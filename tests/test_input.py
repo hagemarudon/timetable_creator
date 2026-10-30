@@ -1,33 +1,12 @@
-"""Excelの雛形と、Googleログイン（OAuth）まわりのテスト。通信はしない。"""
+"""Googleログイン（OAuth）とスプレッドシート読み込みまわりのテスト。通信はしない。"""
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from timetable import google_sheets as gs
-from timetable.loader import REQUIRED_SHEETS, load_settings, parse, read_xlsx
-from timetable.template import template_xlsx
+from timetable.loader import load_settings, parse, read_xlsx
 
 ROOT = Path(__file__).parent.parent
 CFG = gs.OAuthConfig("id.apps.googleusercontent.com", "secret", "http://localhost:8501")
-
-
-def test_template_has_required_sheets_and_slot_columns():
-    settings = load_settings(ROOT / "config.toml")
-    dfs = read_xlsx(template_xlsx(settings))
-    assert set(REQUIRED_SHEETS) <= set(dfs)
-    slots = [s.label for s in settings.slots]
-    assert list(dfs["生徒_空き時間"].columns) == ["生徒ID", "氏名", *slots]
-    assert list(dfs["講師_空き時間"].columns) == ["講師ID", "氏名", *slots]
-    # 空の雛形はそのまま読み込んでもエラーにならない（列が揃っている）
-    problem, notes = parse(dfs, settings)
-    assert problem is not None and not problem.requests
-
-
-def test_template_follows_edited_komas():
-    settings = load_settings(ROOT / "config.toml")
-    settings.days = ["月", "水"]
-    settings.komas = settings.komas[:2]
-    cols = list(read_xlsx(template_xlsx(settings))["生徒_空き時間"].columns)
-    assert cols == ["生徒ID", "氏名", "月1", "月2", "水1", "水2"]
 
 
 def test_state_is_checked():

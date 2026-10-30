@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .model import FORMS, SUBJECTS, Koma, Problem, Request, Settings, Slot, Student, Teacher
+from .model import FORMS, Koma, Problem, Request, Settings, Slot, Student, Teacher
 
 SHEET_KOMA = "コマ設定"
 SHEET_STUDENT_REQ = "生徒_受講希望"
@@ -19,6 +19,9 @@ REQUIRED_SHEETS = [SHEET_STUDENT_REQ, SHEET_STUDENT_AVAIL, SHEET_TEACHER, SHEET_
 
 MARKS = {"○", "◯", "〇", "o", "O", "1", "true", "TRUE", "True", "✓", "✔"}
 
+
+# 「講師_担当可能科目」シートで科目ではない列。これ以外の列見出しはすべて科目として扱う
+TEACHER_INFO_COLS = {"講師ID", "氏名", "集団可", "個別可", "週の上限コマ", "備考", "メモ"}
 
 LOCAL_CONFIG_NAME = "config.local.toml"
 
@@ -80,6 +83,12 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
     return df[(df != "").any(axis=1)]
 
 
+def subjects_from_sheet(df: pd.DataFrame) -> list[str]:
+    """「講師_担当可能科目」シートの列見出しから科目を読む（シートの列順）。"""
+    return [c for c in df.columns
+            if c and c not in TEACHER_INFO_COLS and not c.startswith("Unnamed")]
+
+
 def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet: str,
                        errors: list[str]) -> dict[str, set[Slot]]:
     valid = {s.label: s for s in settings.slots}
@@ -130,12 +139,15 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
     for sheet, df, cols in [
         (SHEET_STUDENT_REQ, req_df, ["生徒ID", "氏名", "学年", "科目", "形式", "週の回数"]),
         (SHEET_STUDENT_AVAIL, st_av_df, ["生徒ID"]),
-        (SHEET_TEACHER, t_df, ["講師ID", "氏名", *SUBJECTS, "集団可", "個別可"]),
+        (SHEET_TEACHER, t_df, ["講師ID", "氏名", "集団可", "個別可"]),
         (SHEET_TEACHER_AVAIL, t_av_df, ["講師ID"]),
     ]:
         lack = [c for c in cols if c not in df.columns]
         if lack:
             errors.append(f"「{sheet}」に列 {', '.join(lack)} がありません。")
+    subjects = subjects_from_sheet(t_df)
+    if not subjects:
+        errors.append(f"「{SHEET_TEACHER}」に科目の列がありません。科目名（例：英語、数学）を列見出しにして、担当できる講師に○を付けてください。")
     if errors:
         return None, errors
 
@@ -153,7 +165,7 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
         limit = r.get("週の上限コマ", "")
         teachers[tid] = Teacher(
             id=tid, name=r["氏名"],
-            subjects={s for s in SUBJECTS if _marked(r[s])},
+            subjects={s for s in subjects if _marked(r[s])},
             can_group=_marked(r["集団可"]), can_individual=_marked(r["個別可"]),
             max_komas=int(limit) if limit.isdigit() else None,
             available=t_avail.get(tid, set()),
@@ -173,8 +185,9 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
             students[sid] = Student(sid, r["氏名"], r["学年"], st_avail.get(sid, set()))
             if sid not in st_avail:
                 errors.append(f"生徒 {sid}（{r['氏名']}）の空き時間が「{SHEET_STUDENT_AVAIL}」にありません。")
-        if r["科目"] not in SUBJECTS:
-            errors.append(f"「{SHEET_STUDENT_REQ}」{row_no}行目：科目「{r['科目']}」は対象外です（{'・'.join(SUBJECTS)}）。")
+        if r["科目"] not in subjects:
+            errors.append(f"「{SHEET_STUDENT_REQ}」{row_no}行目：科目「{r['科目']}」が「{SHEET_TEACHER}」の列にありません"
+                          f"（今ある科目：{'・'.join(subjects)}）。")
             continue
         if r["形式"] not in FORMS:
             errors.append(f"「{SHEET_STUDENT_REQ}」{row_no}行目：形式は「集団」か「個別」にしてください。")
@@ -193,7 +206,7 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
             pref = ""
         requests.append(Request(len(requests), sid, r["科目"], r["形式"], int(r["週の回数"]), pref or None))
 
-    for subj in SUBJECTS:
+    for subj in subjects:
         for form in FORMS:
             if any(q.subject == subj and q.form == form for q in requests) and not any(
                 subj in t.subjects and (t.can_group if form == "集団" else t.can_individual)
@@ -201,4 +214,4 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
             ):
                 errors.append(f"{subj}（{form}）を担当できる講師がいません。")
 
-    return Problem(settings, students, teachers, requests), errors
+    return Problem(settings, students, teachers, requests, subjects), errors
