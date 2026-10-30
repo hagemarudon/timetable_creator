@@ -109,6 +109,38 @@ def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet:
     return out
 
 
+def _read_fixed(text: str, req: Request, student: Student, teachers: dict[str, Teacher],
+                settings: Settings, where: str, errors: list[str]) -> list[Slot]:
+    """「固定」列（例：「月1」「月1、木2」）を読む。入れられないコマは注意を出して外す。"""
+    valid = {s.label: s for s in settings.slots}
+    fixed: list[Slot] = []
+    for label in re.split(r"[、,，・\s]+", text):
+        if not label:
+            continue
+        sl = valid.get(label)
+        if sl is None:
+            errors.append(f"{where}：固定の「{label}」は設定のコマ割にありません（無視します）。")
+            continue
+        if sl in fixed:
+            continue
+        if sl not in student.available:
+            errors.append(f"{where}：固定の{label}は生徒の空き時間ではありません（無視します）。")
+            continue
+        elig = [t for t in teachers.values()
+                if (t.can_group if req.form == "集団" else t.can_individual)
+                and req.subject in t.subjects and sl in t.available]
+        if not elig:
+            errors.append(f"{where}：固定の{label}に{req.subject}（{req.form}）を担当できる講師が空いていません（無視します）。")
+            continue
+        if req.preferred_teacher and req.form == "個別" and all(t.id != req.preferred_teacher for t in elig):
+            errors.append(f"{where}：希望講師 {req.preferred_teacher} は{label}に入れないため、固定は他の講師で入れます。")
+        fixed.append(sl)
+    if len(fixed) > req.times:
+        errors.append(f"{where}：固定のコマが週の回数（{req.times}）より多いです（先の{req.times}コマだけ使います）。")
+        fixed = fixed[:req.times]
+    return fixed
+
+
 def komas_from_sheet(dfs: dict[str, pd.DataFrame]) -> list[Koma] | None:
     """「コマ設定」シートがあれば、そのコマ割を返す。"""
     if SHEET_KOMA not in dfs:
@@ -206,7 +238,19 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
         if pref and pref not in teachers:
             errors.append(f"「{SHEET_STUDENT_REQ}」{row_no}行目：希望講師 {pref} が講師一覧にありません（無視します）。")
             pref = ""
-        requests.append(Request(len(requests), sid, r["科目"], r["形式"], int(r["週の回数"]), pref or None))
+        req = Request(len(requests), sid, r["科目"], r["形式"], int(r["週の回数"]), pref or None)
+        req.fixed = _read_fixed(r.get("固定（任意）", "") or r.get("固定", ""), req, students[sid], teachers,
+                                settings, f"「{SHEET_STUDENT_REQ}」{row_no}行目", errors)
+        requests.append(req)
+
+    taken: dict[tuple[str, Slot], str] = {}
+    for q in requests:
+        for sl in list(q.fixed):
+            other = taken.setdefault((q.student_id, sl), q.subject)
+            if other != q.subject:
+                errors.append(f"生徒 {q.student_id} の{other}と{q.subject}が同じ{sl.label}に固定されています"
+                              f"（{q.subject}の固定は無視します）。")
+                q.fixed.remove(sl)
 
     for subj in subjects:
         for form in FORMS:

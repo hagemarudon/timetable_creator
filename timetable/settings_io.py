@@ -97,6 +97,7 @@ def settings_to_toml(settings: Settings) -> str:
         f"same_day_repeat = {w['same_day_repeat']}        # 同じ科目が同じ日に2回入ったら減点",
         f"teacher_work_day = {w['teacher_work_day']}       # 講師の出勤日1日ごとに減点（出勤日をまとめたい）",
         f"student_gap = {w['student_gap']}            # 生徒の1日の授業の間に空きコマができたら減点",
+        f"keep_previous = {w.get('keep_previous', 0)}         # 前回の時間割と同じコマに入ったら加点（同じ講師ならさらに半分）",
         "",
     ]
     return "\n".join(lines)

@@ -7,22 +7,43 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 
 from ortools.sat.python import cp_model
 
 from .model import Lesson, Problem, Request, Result, Slot, Unassigned
+from .previous import PrevLesson
 
 
 def _group_key(problem: Problem, r: Request) -> tuple[str, str]:
     return (r.subject, problem.students[r.student_id].grade)
 
 
-def solve(problem: Problem) -> Result:
+# 「解けない理由」を調べるときに1つずつ外してみる必須条件
+RELAXATIONS = {
+    "fixed": "「固定」列のコマ指定",
+    "consecutive": "1日の授業を連続させる",
+    "booths": "個別ブース数",
+    "rooms": "集団教室数",
+    "teacher_max": "講師の週の上限コマ",
+    "mixed": "個別で科目の違う生徒を同時に見ない",
+}
+
+
+def solve(problem: Problem, relax: frozenset[str] = frozenset(), time_limit: float | None = None,
+          previous: list[PrevLesson] | None = None) -> Result:
+    """時間割を組む。relax に RELAXATIONS のキーを入れると、その必須条件を外して解く。
+
+    previous（前回の時間割）を渡すと、前回と同じコマ・同じ講師に入れた授業に加点する。
+    """
     s = problem.settings
     w = s.weights
     slots = s.slots
     students, teachers = problem.students, problem.teachers
     m = cp_model.CpModel()
+    keep = w.get("keep_previous", 0) if previous else 0
+    prev_slot = {(p.student_id, p.subject, p.form, p.slot) for p in previous or []}
+    prev_teacher = {(p.student_id, p.subject, p.form, p.slot, p.teacher_id) for p in previous or []}
 
     # 生徒・講師が各コマで入っている授業の変数
     student_busy: dict[tuple[str, Slot], list] = defaultdict(list)
@@ -52,6 +73,9 @@ def solve(problem: Problem) -> Result:
                 ind_by_ts_subject[t.id, sl, r.subject].append(v)
                 if r.preferred_teacher == t.id:
                     bonus_terms.append((w["preferred_teacher"], v))
+                if keep and (r.student_id, r.subject, r.form, sl) in prev_slot:
+                    same_t = (r.student_id, r.subject, r.form, sl, t.id) in prev_teacher
+                    bonus_terms.append((keep + (keep // 2 if same_t else 0), v))
             if used_t:
                 # 講師が何人目かを数えるための変数（毎回同じ講師を優先）
                 u = m.NewBoolVar(f"u_{r.index}_{t.id}")
@@ -60,6 +84,11 @@ def solve(problem: Problem) -> Result:
                 penalty_terms.append((w["same_teacher"], u))
         m.Add(sum(per_req) <= r.times)
         assigned_terms.extend(per_req)
+        for sl in ([] if "fixed" in relax else r.fixed):
+            pinned = x.get((r.index, r.preferred_teacher, sl))
+            at_sl = [pinned] if pinned is not None else [v for (ri, _, sl2), v in x.items() if ri == r.index and sl2 == sl]
+            if at_sl:
+                m.Add(sum(at_sl) == 1)
         for d in s.days:
             day_vars = [v for (ri, _, sl), v in x.items() if ri == r.index and sl.day == d]
             if len(day_vars) > 1:
@@ -75,7 +104,7 @@ def solve(problem: Problem) -> Result:
         m.Add(sum(vs) <= s.max_students_per_teacher * yv)
         m.Add(sum(vs) >= yv)
         teacher_busy[tid, sl].append(yv)
-        if not s.allow_mixed_subjects:
+        if not s.allow_mixed_subjects and "mixed" not in relax:
             subj_vars = []
             for (t2, sl2, subj), svs in ind_by_ts_subject.items():
                 if t2 == tid and sl2 == sl:
@@ -86,7 +115,7 @@ def solve(problem: Problem) -> Result:
             m.Add(sum(subj_vars) <= 1)
     for sl in slots:
         booth_vars = [yv for (tid, sl2), yv in y.items() if sl2 == sl]
-        if booth_vars:
+        if booth_vars and "booths" not in relax:
             m.Add(sum(booth_vars) <= s.individual_booths)
 
     # ---------------- 集団授業 ----------------
@@ -137,11 +166,17 @@ def solve(problem: Problem) -> Result:
                     m.Add(a <= sum(gs))
                     student_busy[r.student_id, sl].append(a)
                     assigned_terms.append(a)
+                    if keep and (r.student_id, r.subject, r.form, sl) in prev_slot:
+                        bonus_terms.append((keep, a))
             m.Add(sum(member[r.index, ci] for r in reqs) <= s.group_capacity)
         for r in reqs:
             m.AddExactlyOne(member[r.index, ci] for ci in sec_ids)
             mine = [a for (ri, ci, _), a in att.items() if ri == r.index]
             m.Add(sum(mine) <= r.times)
+            for sl in ([] if "fixed" in relax else r.fixed):
+                at_sl = [a for (ri, _, sl2), a in att.items() if ri == r.index and sl2 == sl]
+                if at_sl:
+                    m.Add(sum(at_sl) == 1)
             for d in s.days:
                 day_vars = [a for (ri, _, sl), a in att.items() if ri == r.index and sl.day == d]
                 if len(day_vars) > 1:
@@ -154,7 +189,7 @@ def solve(problem: Problem) -> Result:
 
     for sl in slots:
         room_vars = [v for (ci, tid, sl2), v in g.items() if sl2 == sl]
-        if room_vars:
+        if room_vars and "rooms" not in relax:
             m.Add(sum(room_vars) <= s.group_rooms)
 
     # ---------------- 生徒・講師の重複禁止と優先条件 ----------------
@@ -167,7 +202,7 @@ def solve(problem: Problem) -> Result:
         m.Add(sum(vs) <= 1)
     for t in teachers.values():
         all_t = [v for (tid, _), vs in teacher_busy.items() if tid == t.id for v in vs]
-        if t.max_komas is not None and all_t:
+        if t.max_komas is not None and all_t and "teacher_max" not in relax:
             m.Add(sum(all_t) <= t.max_komas)
         for d in s.days:
             day_t = [v for (tid, sl), vs in teacher_busy.items() if tid == t.id and sl.day == d for v in vs]
@@ -181,7 +216,8 @@ def solve(problem: Problem) -> Result:
     # 授業のかたまりの始まりを数え、1日に1つまでにする
     komas = [k.no for k in s.komas]
     teacher_expr = {key: sum(vs) for key, vs in teacher_busy.items()}
-    for kind, people, expr in (("s", students, busy_expr), ("t", teachers, teacher_expr)):
+    for kind, people, expr in (() if "consecutive" in relax else
+                               (("s", students, busy_expr), ("t", teachers, teacher_expr))):
         for pid in people:
             for d in s.days:
                 day_busy = [expr.get((pid, Slot(d, k)), 0) for k in komas]
@@ -202,12 +238,14 @@ def solve(problem: Problem) -> Result:
     )
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = s.time_limit_seconds
+    solver.parameters.max_time_in_seconds = time_limit or s.time_limit_seconds
     solver.parameters.num_workers = 8
     code = solver.Solve(m)
     status = {cp_model.OPTIMAL: "最適解", cp_model.FEASIBLE: "時間内の最良解"}.get(code)
     if status is None:
-        return Result("解けませんでした", [], [Unassigned(r, r.times, "計算が時間内に終わりませんでした") for r in problem.requests])
+        reason = ("固定したコマなどの必須条件を同時に満たせません" if code == cp_model.INFEASIBLE
+                  else "計算が時間内に終わりませんでした")
+        return Result("解けませんでした", [], [Unassigned(r, r.times, reason) for r in problem.requests])
 
     # ---------------- 結果の取り出し ----------------
     lessons: list[Lesson] = []
@@ -274,3 +312,53 @@ def _reason(problem: Problem, r: Request) -> str:
     if r.form == "集団":
         return "同じクラスの他の生徒と時間が合わなかった、教室・講師が足りない、または授業を連続させる条件で入らなかった"
     return "他の授業とコマ・ブース・講師を取り合った、または授業を連続させる条件で入らなかった"
+
+
+@dataclass
+class Diagnosis:
+    """必須条件を1つ外して解き直した結果。"""
+    key: str
+    label: str
+    status: str
+    placed: int
+    gained: int                 # 外す前より増えたコマ数
+    newly_placed: list[Request]  # 外すと入るようになる受講希望
+
+
+def applicable_relaxations(problem: Problem) -> list[str]:
+    """この入力で外してみる意味がある必須条件。"""
+    s = problem.settings
+    forms = {r.form for r in problem.requests}
+    keys = []
+    if any(r.fixed for r in problem.requests):
+        keys.append("fixed")
+    keys.append("consecutive")
+    if "個別" in forms:
+        keys.append("booths")
+    if "集団" in forms and s.group_rooms < len(s.slots):
+        keys.append("rooms")
+    if any(t.max_komas is not None for t in problem.teachers.values()):
+        keys.append("teacher_max")
+    if "個別" in forms and not s.allow_mixed_subjects and s.max_students_per_teacher > 1:
+        keys.append("mixed")
+    return keys
+
+
+def diagnose(problem: Problem, base: Result, time_limit: float = 10, on_progress=None) -> list[Diagnosis]:
+    """必須条件を1つずつ外して解き直し、何コマ入るようになるかを調べる（多く入る順）。"""
+    def placed(res: Result) -> tuple[int, dict[int, int]]:
+        missing = {u.request.index: u.missing for u in res.unassigned}
+        return sum(r.times for r in problem.requests) - sum(missing.values()), missing
+
+    base_placed, base_missing = placed(base)
+    keys = applicable_relaxations(problem)
+    out = []
+    for i, key in enumerate(keys):
+        if on_progress:
+            on_progress(i, len(keys), RELAXATIONS[key])
+        res = solve(problem, frozenset({key}), time_limit)
+        n, missing = placed(res)
+        newly = [r for r in problem.requests if missing.get(r.index, 0) < base_missing.get(r.index, 0)]
+        out.append(Diagnosis(key, RELAXATIONS[key], res.status, n, max(0, n - base_placed), newly))
+    out.sort(key=lambda d: -d.gained)
+    return out
