@@ -1,15 +1,22 @@
 """時間割を表にして、Excel に書き出す（Googleスプレッドシートへは google_sheets.write_sheets）。"""
 from __future__ import annotations
 
+import colorsys
+import datetime
 import io
+import itertools
+import math
+import unicodedata
 from dataclasses import dataclass
 
 import pandas as pd
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .model import Problem, Result
 from .previous import SHEET_PREVIOUS, previous_sheet
 
+SHEET_SCHEDULE = "スケジュール表"
 SHEET_ALL = "時間割_全体"
 SHEET_STUDENT = "時間割_生徒別"
 SHEET_TEACHER = "時間割_講師別"
@@ -179,10 +186,156 @@ def all_sheets(problem: Problem, result: Result, view: View = View()) -> dict[st
     }
 
 
+def _minutes(hhmm: str) -> int:
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
+def _time_axis(problem: Problem) -> tuple[int, int, int]:
+    """スケジュール表の時間の刻み（分）・最初の行の時刻・最後の時刻を決める。
+
+    紙の表に合わせて30分刻みにし、コマはそのコマの時間にかかる行をまとめて1つのマスにする。
+    30分刻みだと隣のコマと行が重なるときは、コマの時刻が割り切れる刻みにする。
+    """
+    times = sorted((_minutes(k.start), _minutes(k.end)) for k in problem.settings.komas)
+    step = 30
+    spans = [(a // step * step, -(-b // step) * step) for a, b in times]
+    if any(prev[1] > nxt[0] for prev, nxt in itertools.pairwise(spans)):
+        step = math.gcd(*[t for ab in times for t in ab], 60)
+        spans = times
+    return step, spans[0][0], max(b for _, b in spans)
+
+
+def _rgb(color: str) -> str:
+    """subject_colors の色（#rrggbb か hsl(h, s%, l%)）を Excel の RRGGBB にする。"""
+    if color.startswith("#"):
+        return color[1:].upper()
+    h, sat, light = (float(x.strip(" %")) for x in color[4:-1].split(","))
+    r, g, b = colorsys.hls_to_rgb(h / 360, light / 100, sat / 100)
+    return f"{round(r * 255):02X}{round(g * 255):02X}{round(b * 255):02X}"
+
+
+def _schedule_text(problem: Problem, ls, view: View) -> str:
+    """スケジュール表の1マス。個別は「生徒　科目」を1人1行、集団は「科目　学年」。"""
+    if ls.form == "集団":
+        lines = [ls.class_name.replace(" ", "\u3000")]
+    else:
+        lines = [f"{student_name(problem, x, view)}\u3000{ls.student_subjects.get(x, ls.subject)}"
+                 for x in ls.student_ids]
+    if view.show_room and ls.room:
+        lines.append(f"（{ls.room}）")
+    return "\n".join(lines)
+
+
+def _text_lines(text: str, width: float) -> int:
+    """列幅 width の Excel のマスで text が何行になるかの目安（全角は2文字ぶん）。"""
+    return sum(max(1, math.ceil(sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in line)
+                                / (width - 2))) for line in text.split("\n"))
+
+
+def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View()) -> None:
+    """紙のスケジュール表と同じ形で書く。
+
+    曜日ごとに「時刻の列＋その日に授業がある講師の列＋予備の列」を横に並べ、
+    行は30分刻みの時刻、授業はコマの時間ぶんの行をまとめた1マスに書く。
+    上に曜日と講師名、下にも講師名と曜日を入れる。
+    """
+    step, first, last = _time_axis(problem)
+    n_rows = (last - first) // step
+    top = 3                    # 1行目：曜日、2行目：講師名、3行目から時刻
+    foot = top + n_rows        # 下の講師名の行（その下に曜日）
+
+    font = "游ゴシック"
+    medium, thin, hair = (Side(style=x) for x in ("medium", "thin", "hair"))
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    colors = {k: _rgb(v) for k, v in subject_colors(problem.subjects).items()}
+
+    width = 22
+    row_height = 20.0  # 時刻の1行の高さ。授業の文字がマスに収まるよう、下で広げる
+    by_cell = {(ls.slot.day, ls.teacher_id, ls.slot.koma): ls for ls in result.lessons}
+    komas = {k.no: k for k in problem.settings.komas}
+
+    col = 1
+    for d in problem.settings.days:
+        teachers = [(tid, t.name) for tid, t in problem.teachers.items()
+                    if any(ls.slot.day == d and ls.teacher_id == tid for ls in result.lessons)]
+        teachers.append((None, SPARE))
+        left, right = col, col + len(teachers)
+
+        for row in (1, foot + 1):
+            ws.merge_cells(start_row=row, start_column=left, end_row=row, end_column=right)
+            c = ws.cell(row, left, d)
+            c.font = Font(name=font, size=16, bold=True)
+            c.alignment = center
+        ws.column_dimensions[get_column_letter(left)].width = 8
+        for i in range(n_rows):
+            minute = first + i * step
+            c = ws.cell(top + i, left, datetime.time(minute // 60, minute % 60))
+            c.number_format = "h:mm"
+            c.font = Font(name=font, size=11)
+            c.alignment = Alignment(horizontal="right", vertical="top")
+
+        for j, (tid, name) in enumerate(teachers, start=left + 1):
+            ws.column_dimensions[get_column_letter(j)].width = width
+            for row in (top - 1, foot):
+                c = ws.cell(row, j, name)
+                c.font = Font(name=font, size=12, bold=True)
+                c.alignment = center
+            for no, k in komas.items():
+                ls = by_cell.get((d, tid, no))
+                if ls is None:
+                    continue
+                r0 = top + (_minutes(k.start) - first) // step
+                r1 = top + -(-(_minutes(k.end) - first) // step) - 1
+                if r1 > r0:
+                    ws.merge_cells(start_row=r0, start_column=j, end_row=r1, end_column=j)
+                c = ws.cell(r0, j, _schedule_text(problem, ls, view))
+                c.font = Font(name=font, size=12, bold=True)
+                row_height = max(row_height, (_text_lines(c.value, width) * 16 + 4) / (r1 - r0 + 1))
+                c.alignment = center
+                subj = ls.student_subjects.get(ls.student_ids[0], ls.subject) if ls.student_ids else ls.subject
+                if subj in colors:
+                    c.fill = PatternFill("solid", fgColor=colors[subj])
+
+        # 罫線：曜日のまとまりは太線、講師の間は細線、時刻の行は極細線、授業のマスは細線で囲む
+        lesson_rows = {(m.min_col, r): (m.min_row, m.max_row) for m in ws.merged_cells.ranges
+                       if top <= m.min_row < foot for r in range(m.min_row, m.max_row + 1)}
+        for j in range(left, right + 1):
+            for row in range(1, foot + 2):
+                first_row, last_row = lesson_rows.get((j, row), (None, None))
+                if row < top or row >= foot - 1:
+                    bottom = medium
+                elif last_row is not None:
+                    bottom = thin if row == last_row else None
+                else:
+                    bottom = hair
+                ws.cell(row, j).border = Border(
+                    left=medium if j == left else thin,
+                    right=medium if j == right else thin,
+                    top=medium if row in (1, foot) else thin if row == first_row else None,
+                    bottom=bottom,
+                )
+        col = right + 1
+
+    ws.row_dimensions[1].height = ws.row_dimensions[foot + 1].height = 28
+    ws.row_dimensions[top - 1].height = ws.row_dimensions[foot].height = 22
+    for row in range(top, foot):
+        ws.row_dimensions[row].height = math.ceil(row_height)
+    ws.freeze_panes = ws.cell(top, 1)
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+
 def to_xlsx(problem: Problem, result: Result, view: View = View()) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        # 最初のシートは紙のスケジュール表と同じ形（講師列の表を、時刻の行とまとめたマスで書いたもの）
+        write_schedule_sheet(xw.book.create_sheet(SHEET_SCHEDULE), problem, result, view)
         for name, df in all_sheets(problem, result, view).items():
+            if name == SHEET_TEACHER_COLUMNS:
+                continue
             # 曜日と講師の2段の見出しは、コマを行の見出しにして書く（Excel で曜日がまとまる）
             df.to_excel(xw, sheet_name=name, index=isinstance(df.columns, pd.MultiIndex))
             ws = xw.sheets[name]
