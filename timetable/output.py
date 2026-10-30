@@ -17,6 +17,23 @@ SPARE = "予備"
 SHEET_UNASSIGNED = "未配置"
 
 
+# 科目の色（薄い色。文字は黒で読める）。足りなければ色相をずらして作る
+PALETTE = ["#dbeafe", "#fee2e2", "#dcfce7", "#fef9c3", "#f3e8ff", "#ffedd5", "#ccfbf1", "#fce7f3",
+           "#e0e7ff", "#ecfccb", "#cffafe", "#fae8ff", "#e7e5e4"]
+
+
+def subject_colors(subjects: list[str]) -> dict[str, str]:
+    """科目ごとに色を割り当てる。並び順で決まるので、同じシートなら毎回同じ色になる。"""
+    colors = {}
+    for i, subj in enumerate(subjects):
+        if i < len(PALETTE):
+            colors[subj] = PALETTE[i]
+        else:
+            hue = (i * 137.5) % 360  # 黄金角で色相をずらし、隣の色と似ないようにする
+            colors[subj] = f"hsl({hue:.0f}, 80%, 90%)"
+    return colors
+
+
 @dataclass(frozen=True)
 class View:
     """表示の切り替え。画面と書き出しの両方で使う。"""

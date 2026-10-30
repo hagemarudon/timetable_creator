@@ -11,12 +11,14 @@ from .loader import SHEET_KOMA, SHEET_STUDENT_AVAIL, SHEET_STUDENT_REQ, SHEET_TE
 from .model import FORMS, Problem, Settings
 
 BLANK_ROWS = 50  # 人を事前に入れないときに、○の選択肢を付けておく行数
+# 入力がまだ無いときに、講師シートへ見本として並べる科目（列は自由に足し引きできる）
+EXAMPLE_SUBJECTS = ["英語", "数学", "物理", "化学", "国語"]
 REQUEST_COLUMNS = ["生徒ID", "氏名", "学年", "科目", "形式", "週の回数", "希望講師（任意）"]
 
 
-def template_sheets(settings: Settings, subjects: list[str],
-                    problem: Problem | None = None) -> dict[str, pd.DataFrame]:
-    """雛形のシート。problem を渡すと、その生徒・講師のIDと氏名を空き時間表に入れておく。"""
+def template_sheets(settings: Settings, problem: Problem | None = None) -> dict[str, pd.DataFrame]:
+    """雛形のシート。problem を渡すと、その生徒・講師のIDと氏名・科目の列を入れておく。"""
+    subjects = (problem.subjects if problem and problem.subjects else EXAMPLE_SUBJECTS)
     slots = [s.label for s in settings.slots]
     students = [(p.id, p.name) for p in problem.students.values()] if problem else []
     teachers = [(p.id, p.name) for p in problem.teachers.values()] if problem else []
@@ -40,9 +42,10 @@ def _choices(ws, values: list[str], first_col: int, last_col: int, last_row: int
     dv.add(f"{get_column_letter(first_col)}2:{get_column_letter(last_col)}{last_row}")
 
 
-def make_template(settings: Settings, subjects: list[str], problem: Problem | None = None) -> bytes:
+def make_template(settings: Settings, problem: Problem | None = None) -> bytes:
     """雛形を Excel にする。○を付ける欄と形式の欄は選択肢から選べるようにする。"""
-    sheets = template_sheets(settings, subjects, problem)
+    sheets = template_sheets(settings, problem)
+    subjects = list(sheets[SHEET_TEACHER].columns[2:-3])
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         for name, df in sheets.items():
@@ -59,7 +62,6 @@ def make_template(settings: Settings, subjects: list[str], problem: Problem | No
                 _choices(ws, ["○"], 3, n - 1, last_row)
             elif name == SHEET_STUDENT_REQ:
                 _choices(ws, FORMS, REQUEST_COLUMNS.index("形式") + 1, REQUEST_COLUMNS.index("形式") + 1, last_row)
-                if subjects:
-                    col = REQUEST_COLUMNS.index("科目") + 1
-                    _choices(ws, subjects, col, col, last_row)
+                col = REQUEST_COLUMNS.index("科目") + 1
+                _choices(ws, subjects, col, col, last_row)
     return buf.getvalue()

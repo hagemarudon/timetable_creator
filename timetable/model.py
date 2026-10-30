@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-SUBJECTS = ["英語", "数学", "物理", "化学", "国語"]
 FORMS = ["集団", "個別"]
 
 
@@ -82,6 +81,8 @@ class Problem:
     students: dict[str, Student]
     teachers: dict[str, Teacher]
     requests: list[Request]
+    # 「講師_担当可能科目」シートの列見出しから読んだ科目（シートの列順）
+    subjects: list[str] = field(default_factory=list)
 
 
 @dataclass
