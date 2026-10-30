@@ -10,11 +10,12 @@ import pandas as pd
 import streamlit as st
 
 from timetable.loader import LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_google_sheet, read_xlsx
-from timetable.model import Koma
+from timetable.model import SUBJECTS, Koma
 from timetable.output import (View, lessons_table, person_grid, student_name, teacher_columns_grid, to_xlsx,
                               unassigned_table, write_google_sheet)
 from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
 from timetable.solver import solve
+from timetable.template import make_template
 
 ROOT = Path(__file__).parent
 WEIGHT_LABELS = {
@@ -80,6 +81,8 @@ try:
         st.download_button("サンプル入力をダウンロード", sample.read_bytes(), sample.name)
 except Exception as e:  # noqa: BLE001
     st.error(f"読み込めませんでした：{e}")
+# 雛形は左の条件（曜日・コマ割）が決まってから作るので、場所だけ先に取っておく
+template_area = st.container()
 
 # 入力に「コマ設定」シートがあれば、そのコマ割を入力欄の初期値にする
 sheet_komas = komas_from_sheet(dfs) if dfs is not None else None
@@ -135,10 +138,17 @@ with st.sidebar:
         save_settings(settings, LOCAL_CONFIG)
         st.success("保存しました。次回からこの条件が最初から入ります。")
 
+problem, notes = parse(dfs, settings, use_koma_sheet=False) if dfs is not None and not koma_errors else (None, [])
+if not koma_errors:
+    with template_area.expander("入力用の雛形をダウンロード"):
+        st.caption("左の曜日・コマ割に合わせた空き時間表など、入力の5シートです。○は選択肢から選べます。")
+        keep_people = problem is not None and st.checkbox("読み込んだ生徒・講師のIDと氏名を入れておく", True)
+        st.download_button("雛形をダウンロード", make_template(settings, SUBJECTS, problem if keep_people else None),
+                           "入力の雛形.xlsx")
+
 if dfs is None or koma_errors:
     st.stop()
 
-problem, notes = parse(dfs, settings, use_koma_sheet=False)
 if notes:
     with st.expander(f"入力の確認（{len(notes)}件）", expanded=problem is None):
         for n in notes:
