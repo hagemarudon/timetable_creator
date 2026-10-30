@@ -56,6 +56,8 @@ class Request:
     form: str
     times: int
     preferred_teacher: str | None
+    # 必ずこのコマに入れる（入力の「固定」列）。希望講師があれば、その講師で固定する
+    fixed: list[Slot] = field(default_factory=list)
 
 
 @dataclass

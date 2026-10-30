@@ -13,7 +13,7 @@ from .model import FORMS, Problem, Settings
 BLANK_ROWS = 50  # 人を事前に入れないときに、○の選択肢を付けておく行数
 # 入力がまだ無いときに、講師シートへ見本として並べる科目（列は自由に足し引きできる）
 EXAMPLE_SUBJECTS = ["英語", "数学", "物理", "化学", "国語"]
-REQUEST_COLUMNS = ["生徒ID", "氏名", "学年", "科目", "形式", "週の回数", "希望講師（任意）"]
+REQUEST_COLUMNS = ["生徒ID", "氏名", "学年", "科目", "形式", "週の回数", "希望講師（任意）", "固定（任意）"]
 
 
 def template_sheets(settings: Settings, problem: Problem | None = None) -> dict[str, pd.DataFrame]:
