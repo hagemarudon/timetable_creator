@@ -1,13 +1,13 @@
 """画面なしで時間割を作る。
 
 使い方: python cli.py 入力.xlsx 出力.xlsx
-       python cli.py "https://docs.google.com/spreadsheets/d/..." 出力.xlsx
+Googleスプレッドシートは「ファイル → ダウンロード → Microsoft Excel」で保存してから渡してください。
 """
 import sys
 import time
 from pathlib import Path
 
-from timetable.loader import LOCAL_CONFIG_NAME, load_settings, parse, read_google_sheet, read_xlsx
+from timetable.loader import LOCAL_CONFIG_NAME, load_settings, parse, read_xlsx
 from timetable.output import to_xlsx, unassigned_table
 from timetable.solver import solve
 
@@ -15,7 +15,7 @@ from timetable.solver import solve
 def main(src: str, dst: str) -> int:
     here = Path(__file__)
     settings = load_settings(here.with_name("config.toml"), overlay=here.with_name(LOCAL_CONFIG_NAME))
-    dfs = read_google_sheet(src) if src.startswith("http") else read_xlsx(src)
+    dfs = read_xlsx(src)
     problem, notes = parse(dfs, settings)
     for n in notes:
         print("注意:", n)

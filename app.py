@@ -2,19 +2,21 @@
 
 起動: streamlit run app.py
 """
-import json
+import html
 import time
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from timetable.loader import LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_google_sheet, read_xlsx
+from timetable import google_sheets as gs
+from timetable.loader import LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_xlsx
 from timetable.model import Koma
-from timetable.output import (View, lessons_table, person_grid, student_name, teacher_columns_grid, to_xlsx,
-                              unassigned_table, write_google_sheet)
+from timetable.output import (View, all_sheets, lessons_table, person_grid, student_name, teacher_columns_grid,
+                              to_xlsx, unassigned_table)
 from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
 from timetable.solver import solve
+from timetable.template import template_xlsx
 
 ROOT = Path(__file__).parent
 WEIGHT_LABELS = {
@@ -25,6 +27,7 @@ WEIGHT_LABELS = {
     "teacher_work_day": "講師の出勤日を少なくする",
     "student_gap": "生徒の空きコマを作らない",
 }
+SRC_EXCEL, SRC_GOOGLE, SRC_SAMPLE = "Excelファイル", "Googleスプレッドシート", "サンプルデータ"
 COLORS = {"英語": "#dbeafe", "数学": "#fee2e2", "物理": "#dcfce7", "化学": "#fef9c3", "国語": "#f3e8ff"}
 
 
@@ -62,24 +65,78 @@ CONFIG = ROOT / "config.toml"
 LOCAL_CONFIG = ROOT / LOCAL_CONFIG_NAME
 settings = load_settings(CONFIG, overlay=LOCAL_CONFIG)
 
-source = st.radio("入力", ["Googleスプレッドシート", "Excelファイル", "サンプルデータ"], horizontal=True)
+
+def google_oauth_config() -> gs.OAuthConfig | None:
+    """.streamlit/secrets.toml の [google_oauth]。無ければ Google からの読み込みは出さない。"""
+    try:
+        return gs.OAuthConfig.from_mapping(st.secrets.get("google_oauth"))
+    except Exception:  # noqa: BLE001  secrets.toml が無いとき
+        return None
+
+
+def google_login_link(cfg: gs.OAuthConfig) -> None:
+    # 新しいタブで開くとログインが別の画面に付くので、同じタブで Google のログイン画面へ移る
+    url = html.escape(gs.login_url(cfg, gs.make_state(cfg)))
+    st.markdown(f'<a href="{url}" target="_self" style="display:inline-block;padding:6px 14px;border-radius:6px;'
+                f'border:1px solid #aaa;text-decoration:none">Googleでログイン</a>', unsafe_allow_html=True)
+
+
+def google_credentials(cfg: gs.OAuthConfig):
+    token = st.session_state.get("google_token")
+    return gs.credentials(cfg, token) if token else None
+
+
+oauth = google_oauth_config()
+# Googleのログイン画面から戻ってきたとき（URLに code と state が付く）
+if oauth and "code" in st.query_params:
+    if gs.check_state(oauth, st.query_params.get("state", "")):
+        try:
+            st.session_state["google_token"] = gs.exchange_code(oauth, st.query_params["code"])
+            st.session_state["source"] = SRC_GOOGLE
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Googleにログインできませんでした：{e}")
+    else:
+        st.error("ログインの有効期限が切れました。もう一度「Googleでログイン」を押してください。")
+    st.query_params.clear()
+
+source = st.radio("入力", [SRC_EXCEL, SRC_GOOGLE, SRC_SAMPLE], horizontal=True, key="source")
 dfs = None
 sheet_url = ""
+template_slot = None
 try:
-    if source == "Googleスプレッドシート":
-        sheet_url = st.text_input("スプレッドシートのURL（共有設定：リンクを知っている全員が閲覧可）")
-        if sheet_url:
-            dfs = read_google_sheet(sheet_url)
-    elif source == "Excelファイル":
+    if source == SRC_EXCEL:
         up = st.file_uploader("Excelファイル", type=["xlsx"])
         if up:
             dfs = read_xlsx(up.getvalue())
+        # 雛形は左の条件（コマ割）が決まってから作るので、場所だけ取っておく
+        template_slot = st.empty()
+        st.caption("Googleスプレッドシートで作った場合は「ファイル → ダウンロード → Microsoft Excel」で保存してアップロードできます。")
+    elif source == SRC_GOOGLE:
+        if oauth is None:
+            st.info("Googleログインの設定がまだです。設定方法は README の「Googleスプレッドシートから読む」を見てください。"
+                    "それまではExcelファイルで読み込めます。")
+        elif google_credentials(oauth) is None:
+            google_login_link(oauth)
+        else:
+            c1, c2 = st.columns([4, 1])
+            sheet_url = c1.text_input("スプレッドシートのURL")
+            if c2.button("ログアウト"):
+                for k in ("google_token", "google_dfs"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+            cached = st.session_state.get("google_dfs")
+            if sheet_url and st.button("読み込む"):
+                cached = st.session_state["google_dfs"] = (sheet_url, gs.read_sheet(google_credentials(oauth), sheet_url))
+            if cached and cached[0] == sheet_url:
+                dfs = cached[1]
     else:
         sample = ROOT / "sample" / "サンプル入力.xlsx"
         dfs = read_xlsx(sample)
         st.download_button("サンプル入力をダウンロード", sample.read_bytes(), sample.name)
 except Exception as e:  # noqa: BLE001
     st.error(f"読み込めませんでした：{e}")
+    if source == SRC_GOOGLE:
+        st.caption("ログインから時間がたつと読めなくなります。ログアウトしてもう一度ログインしてください。")
 
 # 入力に「コマ設定」シートがあれば、そのコマ割を入力欄の初期値にする
 sheet_komas = komas_from_sheet(dfs) if dfs is not None else None
@@ -134,6 +191,9 @@ with st.sidebar:
     if st.button("この条件を既定にする", disabled=bool(koma_errors)):
         save_settings(settings, LOCAL_CONFIG)
         st.success("保存しました。次回からこの条件が最初から入ります。")
+
+if template_slot is not None and not koma_errors:
+    template_slot.download_button("入力用の雛形をダウンロード", template_xlsx(settings), "時間割_入力.xlsx")
 
 if dfs is None or koma_errors:
     st.stop()
@@ -195,13 +255,10 @@ with tabs[5]:
 
 st.subheader("書き出し")
 st.download_button("Excelでダウンロード", to_xlsx(problem, result, view), "時間割.xlsx", type="primary")
-if source == "Googleスプレッドシート" and sheet_url:
-    with st.expander("元のGoogleスプレッドシートに書き込む"):
-        st.caption("Google Cloud のサービスアカウントの鍵（JSON）が必要です。スプレッドシートをそのメールアドレスに編集者として共有してください。")
-        key = st.file_uploader("サービスアカウントの鍵（JSON）", type=["json"])
-        if key and st.button("スプレッドシートに書き込む"):
-            try:
-                write_google_sheet(problem, result, sheet_url, json.loads(key.getvalue()), view)
-                st.success("「時間割_全体」などのシートを書き込みました。")
-            except Exception as e:  # noqa: BLE001
-                st.error(f"書き込めませんでした：{e}")
+if source == SRC_GOOGLE and sheet_url and oauth and google_credentials(oauth):
+    if st.button("元のGoogleスプレッドシートに書き込む"):
+        try:
+            gs.write_sheets(google_credentials(oauth), sheet_url, all_sheets(problem, result, view))
+            st.success("「時間割_全体」などのシートを書き込みました。")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"書き込めませんでした：{e}")
