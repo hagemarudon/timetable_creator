@@ -15,7 +15,7 @@ from timetable.model import Koma
 from timetable.output import (View, all_sheets, lessons_table, person_grid, student_name, subject_colors,
                               teacher_columns_grid, to_xlsx, unassigned_table)
 from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
-from timetable.solver import solve
+from timetable.solver import diagnose, solve
 from timetable.template import make_template
 
 ROOT = Path(__file__).parent
@@ -55,6 +55,35 @@ def overview_html(problem, result, view: View) -> str:
         rows.append(f"<tr><th style='white-space:nowrap'>{k.no}限<br><small>{k.start}-{k.end}</small></th>{tds}</tr>")
     return (f"<div style='overflow-x:auto'><table style='border-collapse:collapse;width:100%'>"
             f"<tr><th></th>{head}</tr>{''.join(rows)}</table></div>")
+
+
+def diagnosis_section(problem, result, view: View) -> None:
+    """必須条件を1つずつ外して解き直し、どの条件のせいで入らないかを表にする。"""
+    st.markdown("#### 入らない理由を調べる")
+    per_run = min(10, int(problem.settings.time_limit_seconds))
+    st.caption(f"必須条件を1つずつ外して作り直し、何コマ増えるかを比べます（1つにつき最大{per_run}秒）。")
+    if st.button("調べる"):
+        bar = st.progress(0.0)
+        found = diagnose(problem, result, per_run,
+                         lambda i, n, label: bar.progress(i / n, text=f"「{label}」を外して計算中…"))
+        bar.empty()
+        st.session_state["diagnosis"] = found
+    found = st.session_state.get("diagnosis")
+    if found is None:
+        return
+    rows = [{
+        "外した条件": d.label,
+        "増えるコマ": d.gained,
+        "入るようになる授業": "、".join(f"{student_name(problem, r.student_id, view)} {r.subject}（{r.form}）"
+                                  for r in d.newly_placed),
+    } for d in found]
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    best = found[0] if found and found[0].gained else None
+    if best:
+        st.info(f"「{best.label}」が一番の原因です。外すと {best.gained} コマ増えます。")
+    else:
+        st.info("どれか1つの条件を外しても増えません。生徒・講師の空き時間が足りないか、複数の条件が重なっています。")
+    st.caption("計算時間を区切っているため、増えるコマは目安です。")
 
 
 st.set_page_config(page_title="塾の時間割作成", layout="wide")
@@ -218,6 +247,7 @@ if st.button("時間割を作る", type="primary"):
     with st.spinner("時間割を計算中…"):
         t0 = time.time()
         st.session_state["result"] = (problem, solve(problem), time.time() - t0)
+        st.session_state.pop("diagnosis", None)
 
 if "result" not in st.session_state:
     st.stop()
@@ -225,7 +255,11 @@ if "result" not in st.session_state:
 problem, result, elapsed = st.session_state["result"]
 total = sum(r.times for r in problem.requests)
 missing = sum(u.missing for u in result.unassigned)
-st.success(f"{result.status}（{elapsed:.1f}秒）：希望 {total} コマ中 {total - missing} コマを配置しました。")
+if result.lessons or not result.unassigned:
+    st.success(f"{result.status}（{elapsed:.1f}秒）：希望 {total} コマ中 {total - missing} コマを配置しました。")
+else:
+    st.error(f"{result.status}（{elapsed:.1f}秒）：{result.unassigned[0].reason}。"
+             "「未配置」の「入らない理由を調べる」で、どの条件が原因かを確かめられます。")
 
 # 表示の切り替えは画面の表と書き出し（Excel・スプレッドシート）の両方に効く
 c1, c2, _ = st.columns([1, 1, 2])
@@ -253,6 +287,7 @@ with tabs[4]:
         st.info("すべての希望が入りました。")
     else:
         st.dataframe(df, width="stretch", hide_index=True)
+        diagnosis_section(problem, result, view)
 with tabs[5]:
     st.dataframe(lessons_table(problem, result, view), width="stretch", hide_index=True)
 
