@@ -15,6 +15,7 @@ from timetable.model import Koma
 from timetable.output import (View, all_sheets, lessons_table, person_grid, student_name, subject_colors,
                               teacher_columns_grid, to_xlsx, unassigned_table)
 from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
+from timetable.previous import kept, read_previous
 from timetable.solver import diagnose, solve
 from timetable.template import make_template
 
@@ -26,6 +27,7 @@ WEIGHT_LABELS = {
     "same_day_repeat": "同じ科目を同じ日に固めない",
     "teacher_work_day": "講師の出勤日を少なくする",
     "student_gap": "生徒の空きコマを作らない",
+    "keep_previous": "前回の時間割と同じコマにする",
 }
 SRC_EXCEL, SRC_GOOGLE, SRC_SAMPLE = "Excelファイル", "Googleスプレッドシート", "サンプルデータ"
 
@@ -213,7 +215,7 @@ with st.sidebar:
     with st.expander("優先条件の重み（大きいほど重視）"):
         w = settings.weights
         for key, label in WEIGHT_LABELS.items():
-            w[key] = st.number_input(label, 0, 1000, w[key], key=f"w_{key}")
+            w[key] = st.number_input(label, 0, 1000, w.get(key, 0), key=f"w_{key}")
     settings.time_limit_seconds = st.number_input("計算時間の上限（秒）", 5, 600, int(settings.time_limit_seconds))
 
     if st.button("この条件を既定にする", disabled=bool(koma_errors)):
@@ -243,10 +245,23 @@ c1.metric("生徒", f"{len(problem.students)}人")
 c2.metric("講師", f"{len(problem.teachers)}人")
 c3.metric("希望コマ数（週）", sum(r.times for r in problem.requests))
 
+previous = None
+with st.expander("今の時間割をなるべく変えずに作り直す"):
+    st.caption("このアプリで前回書き出した時間割のExcelを選ぶと、前回と同じコマ（できれば同じ講師）に入れることを優先します。"
+               "どれだけ優先するかは左の「優先条件の重み」で変えられます。")
+    prev_file = st.file_uploader("前回の時間割（Excel）", type=["xlsx"], key="previous")
+    if prev_file:
+        try:
+            previous = read_previous(prev_file.getvalue())
+            st.success(f"前回の授業 {len(previous)} 件を読み込みました。")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"読み込めませんでした：{e}")
+
 if st.button("時間割を作る", type="primary"):
     with st.spinner("時間割を計算中…"):
         t0 = time.time()
-        st.session_state["result"] = (problem, solve(problem), time.time() - t0)
+        st.session_state["result"] = (problem, solve(problem, previous=previous), time.time() - t0)
+        st.session_state["previous_used"] = previous
         st.session_state.pop("diagnosis", None)
 
 if "result" not in st.session_state:
@@ -260,6 +275,9 @@ if result.lessons or not result.unassigned:
 else:
     st.error(f"{result.status}（{elapsed:.1f}秒）：{result.unassigned[0].reason}。"
              "「未配置」の「入らない理由を調べる」で、どの条件が原因かを確かめられます。")
+if prev := st.session_state.get("previous_used"):
+    same, still = kept(prev, problem, result)
+    st.info(f"前回の授業 {still} 件のうち {same} 件が前回と同じコマです。")
 
 # 表示の切り替えは画面の表と書き出し（Excel・スプレッドシート）の両方に効く
 c1, c2, _ = st.columns([1, 1, 2])
