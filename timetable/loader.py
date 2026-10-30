@@ -1,10 +1,9 @@
-"""設定ファイルとスプレッドシート（Googleスプレッドシート / Excel）の読み込み。"""
+"""設定ファイルと入力（Excel）の読み込み。Googleスプレッドシートは google_sheets.read_sheet で読む。"""
 from __future__ import annotations
 
 import io
 import re
 import tomllib
-import urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -64,19 +63,6 @@ def read_xlsx(source) -> dict[str, pd.DataFrame]:
     if isinstance(source, (bytes, bytearray)):
         source = io.BytesIO(source)
     return pd.read_excel(source, sheet_name=None, dtype=str)
-
-
-def read_google_sheet(url: str) -> dict[str, pd.DataFrame]:
-    """「リンクを知っている全員が閲覧可」のGoogleスプレッドシートを読む。"""
-    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
-    if not m:
-        raise ValueError("GoogleスプレッドシートのURLではないようです。")
-    export = f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=xlsx"
-    with urllib.request.urlopen(export, timeout=30) as r:
-        data = r.read()
-    if not data.startswith(b"PK"):
-        raise ValueError("スプレッドシートを読めませんでした。共有設定を「リンクを知っている全員が閲覧可」にしてください。")
-    return read_xlsx(data)
 
 
 def _cell(v) -> str:

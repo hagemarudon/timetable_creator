@@ -1,4 +1,4 @@
-"""時間割を表にして、Excel / Googleスプレッドシートに書き出す。"""
+"""時間割を表にして、Excel に書き出す（Googleスプレッドシートへは google_sheets.write_sheets）。"""
 from __future__ import annotations
 
 import io
@@ -189,27 +189,3 @@ def to_xlsx(problem: Problem, result: Result, view: View = View()) -> bytes:
                 width = max((len(str(c.value or "")) for c in col), default=4)
                 ws.column_dimensions[get_column_letter(col[0].column)].width = min(60, max(8, width * 1.6))
     return buf.getvalue()
-
-
-def write_google_sheet(problem: Problem, result: Result, url: str, credentials_json: dict,
-                       view: View = View()) -> None:
-    """サービスアカウントで、元のスプレッドシートに時間割のシートを書き込む。
-
-    スプレッドシートをサービスアカウントのメールアドレスに「編集者」で共有しておく必要がある。
-    """
-    import gspread
-
-    gc = gspread.service_account_from_dict(credentials_json)
-    sh = gc.open_by_url(url)
-    existing = {ws.title: ws for ws in sh.worksheets()}
-    for name, df in all_sheets(problem, result, view).items():
-        ws = existing.get(name) or sh.add_worksheet(name, rows=max(len(df) + 5, 20), cols=max(len(df.columns) + 2, 10))
-        ws.clear()
-        if isinstance(df.columns, pd.MultiIndex):
-            # 2段の見出しは、曜日の行と講師の行に分けて書く
-            header = [[df.index.name or ""] + [c[0] for c in df.columns],
-                      [""] + [c[1] for c in df.columns]]
-            body = [[i] + row for i, row in zip(df.index, df.astype(str).values.tolist())]
-            ws.update(header + body)
-        else:
-            ws.update([df.columns.tolist()] + df.astype(str).values.tolist())
