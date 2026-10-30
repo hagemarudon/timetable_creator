@@ -10,11 +10,12 @@ import pandas as pd
 import streamlit as st
 
 from timetable import google_sheets as gs
-from timetable.loader import LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_xlsx
+from timetable.auth import require_account, show_legal
+from timetable.loader import komas_from_sheet, load_settings, parse, read_xlsx
 from timetable.model import Koma
 from timetable.output import (View, all_sheets, lessons_table, person_grid, student_name, subject_colors,
                               teacher_columns_grid, to_xlsx, unassigned_table)
-from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
+from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, settings_to_toml
 from timetable.solver import solve
 from timetable.template import make_template
 
@@ -60,10 +61,13 @@ def overview_html(problem, result, view: View) -> str:
 st.set_page_config(page_title="塾の時間割作成", layout="wide")
 st.title("塾の時間割作成")
 
-CONFIG = ROOT / "config.toml"
-# 画面で保存した条件は Git で管理しない別ファイルに置く（自動pullとぶつからないように）
-LOCAL_CONFIG = ROOT / LOCAL_CONFIG_NAME
-settings = load_settings(CONFIG, overlay=LOCAL_CONFIG)
+# クラウドではログインした人の塾の保存先、手元では Git 管理外の config.local.toml に条件を保存する
+account = require_account()
+# 同じ画面で別の塾の人がログインし直したときに、前の人の結果を残さない
+if st.session_state.get("juku_id") != account.juku.id:
+    st.session_state.clear()
+    st.session_state["juku_id"] = account.juku.id
+settings = load_settings(ROOT / "config.toml", overlay=account.load_settings_overlay())
 
 
 def google_oauth_config() -> gs.OAuthConfig | None:
@@ -188,8 +192,12 @@ with st.sidebar:
     settings.time_limit_seconds = st.number_input("計算時間の上限（秒）", 5, 600, int(settings.time_limit_seconds))
 
     if st.button("この条件を既定にする", disabled=bool(koma_errors)):
-        save_settings(settings, LOCAL_CONFIG)
+        account.save_settings(settings_to_toml(settings))
         st.success("保存しました。次回からこの条件が最初から入ります。")
+
+    if account.cloud:
+        st.divider()
+        show_legal()
 
 problem, notes = parse(dfs, settings, use_koma_sheet=False) if dfs is not None and not koma_errors else (None, [])
 if not koma_errors:

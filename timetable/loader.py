@@ -34,15 +34,17 @@ def _merge(base: dict, over: dict) -> dict:
     return out
 
 
-def load_settings(path: str | Path, overlay: str | Path | None = None) -> Settings:
-    """設定ファイルを読む。overlay のファイルがあれば、その値で上書きする。
+def load_settings(path: str | Path, overlay: str | Path | dict | None = None) -> Settings:
+    """設定ファイルを読む。overlay のファイル（または読み込み済みの表）があれば、その値で上書きする。
 
-    overlay には画面で保存した条件（config.local.toml、Git管理外）を渡す。
+    overlay には画面で保存した条件（config.local.toml、Git管理外。クラウドでは塾ごとの保存先の内容）を渡す。
     config.toml に新しい項目が増えても、overlay に無い項目は config.toml の値が使われる。
     """
     with open(path, "rb") as f:
         c = tomllib.load(f)
-    if overlay is not None and Path(overlay).exists():
+    if isinstance(overlay, dict):
+        c = _merge(c, overlay)
+    elif overlay is not None and Path(overlay).exists():
         with open(overlay, "rb") as f:
             c = _merge(c, tomllib.load(f))
     return Settings(

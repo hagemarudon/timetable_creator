@@ -54,8 +54,8 @@ def check_komas(komas: list[Koma]) -> list[str]:
     return errors
 
 
-def save_settings(settings: Settings, path: str | Path) -> None:
-    """条件を config.toml と同じ形で保存する（config.local.toml に保存し、次回からの初期値になる）。"""
+def settings_to_toml(settings: Settings) -> str:
+    """条件を config.toml と同じ形の文字列にする。"""
     days = ", ".join(f'"{d}"' for d in settings.days)
     lines = [
         "# 塾の時間割作成の設定（画面の「この条件を既定にする」で保存）",
@@ -99,4 +99,9 @@ def save_settings(settings: Settings, path: str | Path) -> None:
         f"student_gap = {w['student_gap']}            # 生徒の1日の授業の間に空きコマができたら減点",
         "",
     ]
-    Path(path).write_text("\n".join(lines), encoding="utf-8")
+    return "\n".join(lines)
+
+
+def save_settings(settings: Settings, path: str | Path) -> None:
+    """条件を config.toml と同じ形で保存する（config.local.toml に保存し、次回からの初期値になる）。"""
+    Path(path).write_text(settings_to_toml(settings), encoding="utf-8")

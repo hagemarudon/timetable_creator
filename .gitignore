@@ -3,4 +3,5 @@ __pycache__/
 *.json
 .venv/
 config.local.toml
+data/
 .streamlit/secrets.toml

@@ -1,0 +1,18 @@
+# Cloud Run で動かすときの Streamlit の設定（Dockerfile でコピーする）
+[server]
+headless = true
+enableCORS = true
+enableXsrfProtection = true
+maxUploadSize = 20
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# エラーの詳細（コードや入力の中身）を利用者の画面に出さない
+showErrorDetails = "none"
+toolbarMode = "minimal"
+
+[secrets]
+files = ["/secrets/secrets.toml"]

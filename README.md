@@ -61,6 +61,11 @@ redirect_uri = "http://localhost:8501"
 
 一般の塾に販売するときは、OAuth 同意画面を「本番」にしてGoogleの審査（スプレッドシートの読み書き権限のため）を受ける必要があります。
 
+## クラウドに置く（ログインと塾ごとのデータ分離）
+
+Google Cloud Run に置き、Googleアカウントでログインして使えます。登録した塾の人だけが入れ、条件は塾ごとに分けて保存します。
+手順は [docs/cloud.md](docs/cloud.md)、利用規約とプライバシーポリシーの案は `legal/` にあります。
+
 ## 守るルール
 
 必須（必ず守る）
@@ -108,4 +113,6 @@ Googleスプレッドシートから読んだときは、ログインしたま�
 - `timetable/solver.py` 時間割の自動作成（OR-Tools）
 - `timetable/output.py` 表の作成と書き出し
 - `timetable/settings_io.py` 画面で入力した条件（コマ割の生成・確認・保存）
+- `timetable/auth.py` ログインと塾の判定／`timetable/accounts.py` 塾と利用者の登録／`timetable/storage.py` 保存先（フォルダ / Cloud Storage）
+- `deploy/` Cloud Run に置くための設定と手順のスクリプト、`legal/` 利用規約とプライバシーポリシー
 - `app.py` 画面（Streamlit）／ `cli.py` コマンドライン版
