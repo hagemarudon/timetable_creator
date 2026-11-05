@@ -166,7 +166,17 @@ def test_xlsx_schedule_sheet_like_paper(solved):
     assert all(m.max_row - m.min_row == 2 for m in lesson_merges)
     ls = next(x for x in result.lessons if x.form == "個別")
     text = "\n".join(str(ws.cell(m.min_row, m.min_col).value) for m in lesson_merges)
-    assert f"{problem.students[ls.student_ids[0]].name}" in text
+    assert f"{problem.students[ls.student_ids[0]].name}\u3000{ls.subject}" in text
+    assert problem.students[ls.student_ids[0]].id not in text  # 縦書きでは名前だけ
+
+    # 授業のマスと講師名は縦書き（Excel の「縦書き」＝textRotation 255）
+    assert all(ws.cell(m.min_row, m.min_col).alignment.textRotation == 255 for m in lesson_merges)
+    assert all(ws.cell(m.min_row, m.min_col).alignment.vertical == "center"
+               and ws.cell(m.min_row, m.min_col).alignment.horizontal == "center" for m in lesson_merges)
+    assert ws.cell(2, 2).alignment.textRotation == 255
+    group = next(x for x in result.lessons if x.form == "集団")
+    subj, grade = group.class_name.split(" ")[:2]
+    assert f"{subj}\u3000{grade.translate(str.maketrans('0123456789', '〇一二三四五六七八九'))}" in text
 
 
 def test_schedule_time_axis_falls_back_when_komas_overlap(solved):

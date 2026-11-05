@@ -6,7 +6,6 @@ import datetime
 import io
 import itertools
 import math
-import unicodedata
 from dataclasses import dataclass
 
 import pandas as pd
@@ -215,30 +214,30 @@ def _rgb(color: str) -> str:
     return f"{round(r * 255):02X}{round(g * 255):02X}{round(b * 255):02X}"
 
 
+KANJI_DIGITS = str.maketrans("0123456789０１２３４５６７８９", "〇一二三四五六七八九" * 2)
+
+
 def _schedule_text(problem: Problem, ls, view: View) -> str:
-    """スケジュール表の1マス。個別は「生徒　科目」を1人1行、集団は「科目　学年」。"""
+    """スケジュール表の1マス（縦書き1列）。個別は「生徒名　科目」、集団は「科目　学年」（中3 → 中三）。
+
+    縦書きで読みやすいよう、生徒は学年・IDを付けず名前だけにする。1対2の個別は「、」でつなぐ。
+    """
     if ls.form == "集団":
-        lines = [ls.class_name.replace(" ", "\u3000")]
+        text = ls.class_name.translate(KANJI_DIGITS).replace(" ", "\u3000")
     else:
-        lines = [f"{student_name(problem, x, view)}\u3000{ls.student_subjects.get(x, ls.subject)}"
-                 for x in ls.student_ids]
+        text = "、".join(f"{problem.students[x].name}\u3000{ls.student_subjects.get(x, ls.subject)}"
+                        for x in ls.student_ids)
     if view.show_room and ls.room:
-        lines.append(f"（{ls.room}）")
-    return "\n".join(lines)
-
-
-def _text_lines(text: str, width: float) -> int:
-    """列幅 width の Excel のマスで text が何行になるかの目安（全角は2文字ぶん）。"""
-    return sum(max(1, math.ceil(sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in line)
-                                / (width - 2))) for line in text.split("\n"))
+        text += f"（{ls.room}）"
+    return text
 
 
 def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View()) -> None:
     """紙のスケジュール表と同じ形で書く。
 
     曜日ごとに「時刻の列＋その日に授業がある講師の列＋予備の列」を横に並べ、
-    行は30分刻みの時刻、授業はコマの時間ぶんの行をまとめた1マスに書く。
-    上に曜日と講師名、下にも講師名と曜日を入れる。
+    行は30分刻みの時刻、授業はコマの時間ぶんの行をまとめた縦長の1マスに縦書きで書く。
+    上に曜日と講師名、下にも講師名と曜日を入れる（講師名も縦書き）。
     """
     step, first, last = _time_axis(problem)
     n_rows = (last - first) // step
@@ -248,10 +247,13 @@ def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View
     font = "游ゴシック"
     medium, thin, hair = (Side(style=x) for x in ("medium", "thin", "hair"))
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    vertical = Alignment(horizontal="center", vertical="center", textRotation=255, wrap_text=True)
     colors = {k: _rgb(v) for k, v in subject_colors(problem.subjects).items()}
 
-    width = 22
-    row_height = 20.0  # 時刻の1行の高さ。授業の文字がマスに収まるよう、下で広げる
+    # 縦長のマスにする：列は縦書きの列数ぶんだけ細く、時刻の行は文字が縦に収まる高さに広げる
+    pt_per_char = 16           # 12ポイントの文字1字ぶんの高さ（縦書きでは半角も1字ぶん取る）
+    row_height = 20.0          # 時刻の1行の高さ
+    name_chars = 2             # いちばん長い講師名の文字数
     by_cell = {(ls.slot.day, ls.teacher_id, ls.slot.koma): ls for ls in result.lessons}
     komas = {k.no: k for k in problem.settings.komas}
 
@@ -276,11 +278,11 @@ def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View
             c.alignment = Alignment(horizontal="right", vertical="top")
 
         for j, (tid, name) in enumerate(teachers, start=left + 1):
-            ws.column_dimensions[get_column_letter(j)].width = width
+            name_chars = max(name_chars, len(name))
             for row in (top - 1, foot):
                 c = ws.cell(row, j, name)
                 c.font = Font(name=font, size=12, bold=True)
-                c.alignment = center
+                c.alignment = vertical
             for no, k in komas.items():
                 ls = by_cell.get((d, tid, no))
                 if ls is None:
@@ -291,8 +293,8 @@ def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View
                     ws.merge_cells(start_row=r0, start_column=j, end_row=r1, end_column=j)
                 c = ws.cell(r0, j, _schedule_text(problem, ls, view))
                 c.font = Font(name=font, size=12, bold=True)
-                row_height = max(row_height, (_text_lines(c.value, width) * 16 + 4) / (r1 - r0 + 1))
-                c.alignment = center
+                row_height = max(row_height, (len(c.value) * pt_per_char + 8) / (r1 - r0 + 1))
+                c.alignment = vertical
                 subj = ls.student_subjects.get(ls.student_ids[0], ls.subject) if ls.student_ids else ls.subject
                 if subj in colors:
                     c.fill = PatternFill("solid", fgColor=colors[subj])
@@ -317,8 +319,11 @@ def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View
                 )
         col = right + 1
 
+    for c in range(1, col):
+        if ws.cell(top, c).value is None:  # 時刻の列以外は、縦書き1列ぶんの細い列にする
+            ws.column_dimensions[get_column_letter(c)].width = 6
     ws.row_dimensions[1].height = ws.row_dimensions[foot + 1].height = 28
-    ws.row_dimensions[top - 1].height = ws.row_dimensions[foot].height = 22
+    ws.row_dimensions[top - 1].height = ws.row_dimensions[foot].height = name_chars * pt_per_char + 8
     for row in range(top, foot):
         ws.row_dimensions[row].height = math.ceil(row_height)
     ws.freeze_panes = ws.cell(top, 1)
