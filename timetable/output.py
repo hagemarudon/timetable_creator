@@ -247,7 +247,7 @@ def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View
     font = "游ゴシック"
     medium, thin, hair = (Side(style=x) for x in ("medium", "thin", "hair"))
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    vertical = Alignment(horizontal="center", vertical="top", textRotation=255, wrap_text=True)
+    vertical = Alignment(horizontal="center", vertical="center", textRotation=255, wrap_text=True)
     colors = {k: _rgb(v) for k, v in subject_colors(problem.subjects).items()}
 
     # 縦長のマスにする：列は縦書きの列数ぶんだけ細く、時刻の行は文字が縦に収まる高さに広げる

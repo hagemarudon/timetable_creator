@@ -171,6 +171,8 @@ def test_xlsx_schedule_sheet_like_paper(solved):
 
     # 授業のマスと講師名は縦書き（Excel の「縦書き」＝textRotation 255）
     assert all(ws.cell(m.min_row, m.min_col).alignment.textRotation == 255 for m in lesson_merges)
+    assert all(ws.cell(m.min_row, m.min_col).alignment.vertical == "center"
+               and ws.cell(m.min_row, m.min_col).alignment.horizontal == "center" for m in lesson_merges)
     assert ws.cell(2, 2).alignment.textRotation == 255
     group = next(x for x in result.lessons if x.form == "集団")
     subj, grade = group.class_name.split(" ")[:2]
