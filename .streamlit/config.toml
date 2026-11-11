@@ -1,0 +1,6 @@
+# 画面の色。白背景・黒文字を既定にし、ダークモードにも切り替えられる（左の「ダークモード」か右上の︙メニュー）
+[theme.light]
+backgroundColor = "#ffffff"
+textColor = "#000000"
+
+[theme.dark]

@@ -92,6 +92,62 @@ def diagnosis_section(problem, result, view: View) -> None:
 
 st.set_page_config(page_title="塾の時間割作成", layout="wide")
 
+# 画面の明るさ。既定は白背景（.streamlit/config.toml）。選んだ明るさはブラウザごとに覚える（右上の︙メニューと同じ保存先）
+THEME_SCRIPT = """
+<script>
+(async () => {
+  const want = %s;  // ダークモードの切替を押したとき "Dark" / "Light"。開いた直後は null
+  const key = "stActiveTheme-" + window.location.pathname + "-v2";
+  const doc = window.parent.document;
+  const app = doc.querySelector(".stApp");
+  const shownDark = () => {
+    const c = (getComputedStyle(app).backgroundColor.match(/\\d+/g) || [255, 255, 255]).map(Number);
+    return c[0] + c[1] + c[2] < 384;
+  };
+  let target = want;
+  if (!target) {
+    let saved = null;
+    try { saved = JSON.parse(window.parent.localStorage.getItem(key)); } catch (e) {}
+    if (saved === "Light" || saved === "Dark") return;  // 前に選んだ明るさのまま
+    target = "Light";  // はじめて開いたときは、パソコンがダークモードでも白背景にする
+  }
+  if (!app || (target === "Dark") === shownDark()) {
+    window.parent.localStorage.setItem(key, JSON.stringify(target));
+    return;
+  }
+  if (want) {
+    // ︙メニューの明るさボタンを押す（読み込み直さないので、読み込んだファイルが消えない）
+    const menu = doc.querySelector('[data-testid="stMainMenuButton"]');
+    if (menu) {
+      menu.click();
+      for (let i = 0; i < 40; i++) {
+        const item = doc.querySelector(`[data-testid="stMainMenuItem-theme-${target}"]`);
+        if (item) {
+          item.click();
+          doc.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+          return;
+        }
+        await new Promise(r => setTimeout(r, 50));
+      }
+      doc.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+    }
+  }
+  window.parent.localStorage.setItem(key, JSON.stringify(target));
+  window.parent.location.reload();
+})();
+</script>
+"""
+
+
+def remember_theme() -> None:
+    st.session_state["theme_want"] = "Dark" if st.session_state["dark_mode"] else "Light"
+
+
+with st.sidebar:
+    st.toggle("ダークモード", value=st.context.theme.type == "dark", key="dark_mode", on_change=remember_theme)
+    want = st.session_state.get("theme_want")
+    st.html(THEME_SCRIPT % (f'"{want}"' if want else "null"), unsafe_allow_javascript=True)
+
 CONFIG = ROOT / "config.toml"
 # 画面で保存した条件は Git で管理しない別ファイルに置く（自動pullとぶつからないように）
 LOCAL_CONFIG = ROOT / LOCAL_CONFIG_NAME
