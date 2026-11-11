@@ -1,5 +1,6 @@
 """google_forms/forms.gs の、フォームの回答を入力シートにまとめる処理のテスト（node で動かす）。"""
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -120,3 +121,19 @@ console.log(JSON.stringify([g.termFilter_([r(1, '前の期'), r(10, '今の期')
     new_term, no_term = json.loads(res.stdout)
     assert [x["answers"]["氏名"] for x in new_term["kept"]] == ["今の期"] and new_term["dropped"] == 1
     assert len(no_term["kept"]) == 1 and no_term["dropped"] == 0
+
+
+def test_term_start_date_is_typed():
+    """回答を使い始める日付は「2026/8/25」「8/25」（今年）などで入れる。空なら今日、読めなければ null。"""
+    script = r"""
+const g = require(process.argv[1]);
+const today = new Date(2026, 10, 11, 20, 14);
+const f = (t) => { const ms = g.parseDate_(t, today); if (ms === null) return null;
+  const d = new Date(ms); return [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours()].join('-'); };
+console.log(JSON.stringify(['2026/8/25', '2026-08-25', '8/25', '２０２６年８月２５日', '', '2026/2/30', 'あした'].map(f)));
+"""
+    res = subprocess.run(["node", "-e", script, str(ROOT / "google_forms" / "forms.gs")],
+                         capture_output=True, text=True, check=True, env={**os.environ, "TZ": "Asia/Tokyo"})
+    got = json.loads(res.stdout)
+    assert got[:4] == ["2026-8-25-0"] * 4  # その日の0時
+    assert got[4] == "2026-11-11-0" and got[5] is None and got[6] is None
