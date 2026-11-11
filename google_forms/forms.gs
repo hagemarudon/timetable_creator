@@ -101,7 +101,59 @@ function onOpen() {
     .addItem('フォームを作る（講習）', '講習のフォームを作る')
     .addItem('回答を入力シートにまとめる', '入力シートを作る')
     .addItem('フォームのURLを表示', 'フォームのURLを表示')
+    .addSeparator()
+    .addItem('新しい期を始める（通常授業。前の回答を使わない）', '新しい期を始める')
+    .addItem('新しい講習を始める（前の講習の回答を使わない）', '新しい講習を始める')
     .addToUi();
+}
+
+// ===== 新しい期を始める =====
+// 学期や講習が変わると生徒・講師も変わるので、前の期の回答を新しい時間割に混ぜないようにする。
+// 「新しい期を始める」を押した日時を覚えておき、まとめるときはそれより前に送られた回答を使わない。
+// 前の期にまとめたシートの「希望講師（任意）」「固定（任意）」と生徒ID・講師IDも引き継がない。
+// 通常授業と講習は別々に区切る（冬期講習を始めても、通常授業の回答はそのまま使う）。
+var PROP_TERM = 'termStart';
+var PROP_BUILT = 'builtAt';
+
+function 新しい期を始める() {
+  startTerm_(false);
+}
+
+function 新しい講習を始める() {
+  startTerm_(true);
+}
+
+function termKey_(prop, season) {
+  return prop + (season ? '_season' : '');
+}
+
+function startTerm_(season, askFirst) {
+  var kind = season ? '講習' : '通常授業';
+  if (askFirst !== false && !confirm_('今から新しい' + (season ? '講習' : '期') + 'の回答を集めます。\n'
+      + '「回答を入力シートにまとめる」では、今より前に送られた' + kind + 'の回答を使いません'
+      + '（前にまとめたシートの希望講師・固定・IDも引き継ぎません）。よろしいですか？')) {
+    return false;
+  }
+  var now = Date.now();
+  PropertiesService.getDocumentProperties().setProperty(termKey_(PROP_TERM, season), String(now));
+  var msg = kind + '：' + formatTime_(now) + ' より前の回答は、これから使いません。';
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* エディタから実行したときはログだけ */ }
+  return true;
+}
+
+/** 区切りの日時（ミリ秒）より前の回答を外す。{kept: 使う回答, dropped: 外した数}。since が 0 なら全部使う。 */
+function termFilter_(responses, since) {
+  var kept = (responses || []).filter(function (r) { return !since || r.time >= since; });
+  return { kept: kept, dropped: (responses || []).length - kept.length };
+}
+
+function formatTime_(ms) {
+  try {
+    return Utilities.formatDate(new Date(ms), Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm');
+  } catch (e) {
+    return new Date(ms).toISOString();
+  }
 }
 
 // ===== フォームを作る =====
@@ -128,6 +180,10 @@ function makeForms_(kind) {
   teacher.setDestination(FormApp.DestinationType.SPREADSHEET, ss.getId());
   props.setProperty(PROP_STUDENT + suffix, student.getId());
   props.setProperty(PROP_TEACHER + suffix, teacher.getId());
+  // 新しいフォームは新しい期のためのことが多いので、前の回答を使わないか聞く
+  if (props.getProperty(termKey_(PROP_BUILT, isSeason_(CONFIG)))) {
+    startTerm_(isSeason_(CONFIG));
+  }
   フォームのURLを表示();
 }
 
@@ -265,26 +321,39 @@ function 入力シートを作る() {
   if (!forms.length) {
     throw new Error('フォームがまだありません。先に「フォームを作る」を実行するか、フォームの回答先をこのスプレッドシートにしてください。');
   }
+  var props = PropertiesService.getDocumentProperties();
   var msgs = [];
   var warnings = [];
   [false, true].forEach(function (season) {
     var mine = forms.filter(function (f) { return f.season === season; });
     if (!mine.length) return;
     var cfg = cfgFor_(season);
+    // 「新しい期を始める」より前の回答は使わない。前の期にまとめたシートからも引き継がない
+    var since = Number(props.getProperty(termKey_(PROP_TERM, season)) || 0);
+    var builtAt = Number(props.getProperty(termKey_(PROP_BUILT, season)) || 0);
+    var samePeriod = !since || builtAt >= since;
+    var dropped = 0;
     var responses = function (teacher) {
-      return mine.filter(function (f) { return f.teacher === teacher; })
-        .reduce(function (all, f) { return all.concat(readResponses_(f.form)); }, []);
+      var all = mine.filter(function (f) { return f.teacher === teacher; })
+        .reduce(function (acc, f) { return acc.concat(readResponses_(f.form)); }, []);
+      var t = termFilter_(all, since);
+      dropped += t.dropped;
+      return t.kept;
     };
-    var students = buildStudentSheets(responses(false), cfg, readSheet_(ss, sheetName_(SHEETS.studentReq, season)));
-    var teachers = buildTeacherSheets(responses(true), cfg, readSheet_(ss, sheetName_(SHEETS.teacher, season)));
+    var previous = function (name) { return samePeriod ? readSheet_(ss, sheetName_(name, season)) : []; };
+    var students = buildStudentSheets(responses(false), cfg, previous(SHEETS.studentReq));
+    var teachers = buildTeacherSheets(responses(true), cfg, previous(SHEETS.teacher));
     writeSheet_(ss, sheetName_(SHEETS.koma, season), komaSheet(cfg));
     writeSheet_(ss, sheetName_(SHEETS.studentReq, season), students.requests);
     writeSheet_(ss, sheetName_(SHEETS.studentAvail, season), students.avail);
     writeSheet_(ss, sheetName_(SHEETS.teacher, season), teachers.teachers);
     writeSheet_(ss, sheetName_(SHEETS.teacherAvail, season), teachers.avail);
+    props.setProperty(termKey_(PROP_BUILT, season), String(Date.now()));
     var kind = season ? '講習' : '通常授業';
     msgs.push(kind + '（' + mine.map(function (f) { return '「' + f.title + '」'; }).join('・') + '）：生徒 '
       + (students.avail.length - 1) + '人・講師 ' + (teachers.avail.length - 1) + '人'
+      + (since ? '。' + formatTime_(since) + ' 以降の回答だけを使いました'
+        + (dropped ? '（それより前の ' + dropped + ' 件は使っていません）' : '') : '')
       + (season ? '。シート名の頭に「' + SEASON_PREFIX + '」を付けました' : ''));
     students.warnings.concat(teachers.warnings).forEach(function (w) { warnings.push(kind + '：' + w); });
   });
@@ -677,7 +746,7 @@ if (typeof module !== 'undefined') {
   module.exports = {
     CONFIG: CONFIG, Q: Q, komaSheet: komaSheet, lessonChoices_: lessonChoices_, komaLabels_: komaLabels_,
     cellLabels_: cellLabels_, days_: days_, q_: q_, cfgFor_: cfgFor_, formTitle_: formTitle_, sheetName_: sheetName_,
-    isSeasonTitle_: isSeasonTitle_, availRows_: availRows_, availChoices_: availChoices_,
+    isSeasonTitle_: isSeasonTitle_, termFilter_: termFilter_, availRows_: availRows_, availChoices_: availChoices_,
     buildStudentSheets: buildStudentSheets, buildTeacherSheets: buildTeacherSheets,
   };
 }
