@@ -81,9 +81,14 @@ def _koma_lines(table: str, komas: list[Koma]) -> list[str]:
 
 
 def save_settings(settings: Settings, path: str | Path) -> None:
-    """条件を config.toml と同じ形で保存する（config.local.toml に保存し、次回からの初期値になる）。
+    """条件を config.toml と同じ形で保存する（config.local.toml に保存し、次回からの初期値になる）。"""
+    Path(path).write_text(settings_text(settings), encoding="utf-8")
 
-    通常授業と講習の条件は両方とも保存し、今の時間割の種類（mode）も次回の初期値にする。
+
+def settings_text(settings: Settings) -> str:
+    """条件を config.toml と同じ形の文字列にする。
+
+    通常授業と講習の条件は両方とも入れ、今の時間割の種類（mode）も次回の初期値にする。
     """
     season = settings.season
     lines = [
@@ -140,4 +145,4 @@ def save_settings(settings: Settings, path: str | Path) -> None:
         f"keep_previous = {w.get('keep_previous', 0)}         # 前回の時間割と同じコマに入ったら加点（同じ講師ならさらに半分）",
         "",
     ]
-    Path(path).write_text("\n".join(lines), encoding="utf-8")
+    return "\n".join(lines)

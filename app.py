@@ -3,6 +3,7 @@
 起動: streamlit run app.py
 """
 import html
+import os
 import time
 from pathlib import Path
 
@@ -14,7 +15,8 @@ from timetable.loader import SEASON_PREFIX, LOCAL_CONFIG_NAME, komas_from_sheet,
 from timetable.model import MODE_SEASON, MODE_WEEKLY, MODES, WEEKDAYS, Koma, date_label
 from timetable.output import (View, all_sheets, lessons_table, person_grid, student_name, subject_colors,
                               teacher_columns_grid, to_xlsx, unassigned_table)
-from timetable.settings_io import ALL_DAYS, check_komas, check_season, describe_komas, make_komas, save_settings
+from timetable.settings_io import (ALL_DAYS, check_komas, check_season, describe_komas, make_komas, save_settings,
+                                   settings_text)
 from timetable.previous import kept, read_previous
 from timetable.solver import diagnose, solve
 from timetable.template import make_template
@@ -93,7 +95,36 @@ st.set_page_config(page_title="塾の時間割作成", layout="wide")
 CONFIG = ROOT / "config.toml"
 # 画面で保存した条件は Git で管理しない別ファイルに置く（自動pullとぶつからないように）
 LOCAL_CONFIG = ROOT / LOCAL_CONFIG_NAME
-settings = load_settings(CONFIG, overlay=LOCAL_CONFIG)
+
+
+def on_cloud() -> bool:
+    """Streamlit Community Cloud などで、ほかの人と同じサーバーを使っているか。
+
+    Community Cloud はリポジトリを /mount/src/ に置く。secrets の [app] cloud = true でも切り替えられる。
+    """
+    try:
+        if bool(st.secrets.get("app", {}).get("cloud", False)):
+            return True
+    except Exception:  # noqa: BLE001  secrets.toml が無いとき
+        pass
+    return str(ROOT).startswith("/mount/src/") or os.environ.get("TIMETABLE_CLOUD") == "1"
+
+
+ON_CLOUD = on_cloud()
+# クラウドでは条件をサーバーに保存しない（ほかの人と共有になり、再起動で消える）。
+# 「条件をファイルに保存」でダウンロードし、次回はそのファイルを読み込んでもらう。
+uploaded_settings = st.session_state.get("settings_file") if ON_CLOUD else None
+if uploaded_settings is not None and st.session_state.get("settings_file_id") != uploaded_settings.file_id:
+    # 新しい条件ファイルを読んだら、前の値を覚えている入力欄を初期値に戻す
+    st.session_state["settings_file_id"] = uploaded_settings.file_id
+    for k in [k for k in st.session_state if str(k).startswith("w_")]:
+        del st.session_state[k]
+try:
+    settings = load_settings(CONFIG, overlay=None if ON_CLOUD else LOCAL_CONFIG,
+                             overlay_text=uploaded_settings.getvalue().decode("utf-8") if uploaded_settings else None)
+except Exception as e:  # noqa: BLE001  読み込んだ条件ファイルが壊れているとき
+    st.error(f"条件ファイルを読み込めませんでした：{e}")
+    settings = load_settings(CONFIG)
 
 
 def google_oauth_config() -> gs.OAuthConfig | None:
@@ -211,6 +242,8 @@ template_area = st.container()
 
 with st.sidebar:
     st.header("条件")
+    if ON_CLOUD:
+        st.file_uploader("保存した条件ファイルを読み込む", type=["toml"], key="settings_file")
     season_errors: list[str] = []
     if settings.is_season:
         st.subheader("講習の期間")
@@ -283,8 +316,12 @@ with st.sidebar:
             w[key] = st.number_input(label, 0, 1000, w.get(key, 0), key=f"w_{key}")
     settings.time_limit_seconds = st.number_input("計算時間の上限（秒）", 5, 600, int(settings.time_limit_seconds))
 
-    if st.button("この条件を既定にする", disabled=bool(koma_errors),
-                 help="通常授業と講習の条件を両方とも保存します。"):
+    if ON_CLOUD:
+        st.download_button("条件をファイルに保存", settings_text(settings) if not koma_errors else "",
+                           "時間割の条件.toml", disabled=bool(koma_errors),
+                           help="通常授業と講習の条件を両方とも保存します。次回は上の「保存した条件ファイルを読み込む」で開いてください。")
+    elif st.button("この条件を既定にする", disabled=bool(koma_errors),
+                   help="通常授業と講習の条件を両方とも保存します。"):
         save_settings(settings, LOCAL_CONFIG)
         st.success("保存しました。次回からこの条件が最初から入ります。")
 

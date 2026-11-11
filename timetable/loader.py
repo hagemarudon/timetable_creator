@@ -79,8 +79,11 @@ def _merge(base: dict, over: dict) -> dict:
     return out
 
 
-def load_settings(path: str | Path, overlay: str | Path | None = None) -> Settings:
+def load_settings(path: str | Path, overlay: str | Path | None = None,
+                  overlay_text: str | None = None) -> Settings:
     """設定ファイルを読む。overlay のファイルがあれば、その値で上書きする。
+
+    overlay_text は保存した条件ファイルの中身（クラウドで画面から読み込んだもの）。overlay の後に重ねる。
 
     overlay には画面で保存した条件（config.local.toml、Git管理外）を渡す。
     config.toml に新しい項目が増えても、overlay に無い項目は config.toml の値が使われる。
@@ -90,6 +93,8 @@ def load_settings(path: str | Path, overlay: str | Path | None = None) -> Settin
     if overlay is not None and Path(overlay).exists():
         with open(overlay, "rb") as f:
             c = _merge(c, tomllib.load(f))
+    if overlay_text:
+        c = _merge(c, tomllib.loads(overlay_text))
     komas = _komas(c["komas"])
     mode = str(c.get("mode", MODE_WEEKLY))
     mode = MODE_ALIASES.get(mode, mode)

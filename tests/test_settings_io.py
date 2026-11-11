@@ -7,7 +7,7 @@ sys.path.insert(0, str(ROOT))
 
 from timetable.loader import load_settings  # noqa: E402
 from timetable.model import Koma  # noqa: E402
-from timetable.settings_io import check_komas, describe_komas, make_komas, save_settings  # noqa: E402
+from timetable.settings_io import check_komas, describe_komas, make_komas, save_settings, settings_text  # noqa: E402
 
 
 def test_make_komas():
@@ -65,3 +65,15 @@ def test_saved_settings_round_trip_as_overlay(tmp_path):
     overlay = tmp_path / "config.local.toml"
     save_settings(s, overlay)
     assert load_settings(ROOT / "config.toml", overlay=overlay) == s
+
+
+def test_settings_file_round_trip():
+    """クラウドでは条件をファイルでダウンロード・読み込みする。中身が同じ条件に戻ること。"""
+    s = load_settings(ROOT / "config.toml")
+    s.individual_booths = 7
+    s.mode = "講習"
+    s.weights["student_gap"] = 123
+    back = load_settings(ROOT / "config.toml", overlay_text=settings_text(s))
+    assert back.individual_booths == 7
+    assert back.mode == "講習"
+    assert back.weights["student_gap"] == 123
