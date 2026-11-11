@@ -13,8 +13,12 @@
 // ===== 設定（アプリの条件と合わせる） =====
 var CONFIG = {
   juku: '〇〇塾',
+  // 時間割の種類（アプリの「時間割の種類」と同じにする）
+  //   '通常期'：毎週同じ曜日の時間割。空き時間を曜日（days）ごとに聞く
+  //   '講習期'：冬期・夏期・春期講習など。空き時間を下の season の日付ごとに聞く
+  kind: '通常期',
   days: ['月', '火', '水', '木', '金', '土'],
-  // 授業のコマ（90分）。「コマ設定」シートになり、アプリはこのコマに授業を入れる
+  // 授業のコマ（90分）。「コマ設定」シートになり、アプリはこのコマに授業を入れる（講習期は season.komas を使う）
   komas: [
     { no: 1, start: '16:00', end: '17:30' },
     { no: 2, start: '17:30', end: '19:00' },
@@ -27,6 +31,23 @@ var CONFIG = {
   subjects: ['英語', '数学', '物理', '化学', '国語'],
   grades: ['小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3'],
   maxTimesPerWeek: 3, // 生徒が1科目で選べる週の回数の上限
+  // 講習期の期間・休み・コマ（kind が '講習期' のときだけ使う。アプリの講習期の設定と同じにする）
+  season: {
+    name: '冬期講習',
+    start: '2026-12-24',
+    end: '2027-01-07',
+    closedWeekdays: ['日'],
+    closedDates: ['2026-12-31', '2027-01-01', '2027-01-02', '2027-01-03'],
+    komas: [
+      { no: 1, start: '13:00', end: '14:30' },
+      { no: 2, start: '14:30', end: '16:00' },
+      { no: 3, start: '16:00', end: '17:30' },
+      { no: 4, start: '17:30', end: '19:00' },
+      { no: 5, start: '19:00', end: '20:30' },
+      { no: 6, start: '20:30', end: '22:00' },
+    ],
+    maxTimes: 10, // 生徒が1科目で選べる講習期間中の回数の上限
+  },
 };
 
 // フォームの質問の見出し（回答を読むときにもこの見出しで探す）
@@ -40,6 +61,14 @@ var Q = {
   teacherForms: '担当できる授業の形式',
   teacherMax: '1週間に担当できる最大コマ数（任意）',
   teacherAvail: '出勤できる時間',
+};
+
+// 講習期は質問の見出しを変える（通常期のフォームの回答は Q の見出しのまま読む）
+var Q_SEASON = {
+  lessons: '受講したい科目と講習の回数',
+  studentAvail: '通塾できる日と時間（○を付けたコマに授業を入れます）',
+  teacherMax: '講習期間中に担当できる最大コマ数（任意）',
+  teacherAvail: '出勤できる日と時間',
 };
 
 var NONE = '受けない';
@@ -79,41 +108,61 @@ function フォームを作る() {
   フォームのURLを表示();
 }
 
+function isSeason_(cfg) {
+  return (cfg || CONFIG).kind === '講習期';
+}
+
+/** 質問の見出し（講習期は Q_SEASON で上書きしたもの）。 */
+function q_(cfg) {
+  var out = {};
+  Object.keys(Q).forEach(function (k) { out[k] = Q[k]; });
+  if (isSeason_(cfg)) Object.keys(Q_SEASON).forEach(function (k) { out[k] = Q_SEASON[k]; });
+  return out;
+}
+
+function formTitle_(kind) {
+  return CONFIG.juku + (isSeason_(CONFIG) ? ' ' + CONFIG.season.name : '') + ' ' + kind;
+}
+
 function makeStudentForm_() {
-  var form = FormApp.create(CONFIG.juku + ' 受講希望アンケート（生徒用）');
+  var q = q_(CONFIG);
+  var season = isSeason_(CONFIG);
+  var form = FormApp.create(formTitle_('受講希望アンケート（生徒用）'));
   form.setDescription('受講したい科目と、通塾できる時間を教えてください。\n'
     + '答え直すときは、送信後に出る「回答を編集」から直すか、同じ氏名でもう一度送ってください（最後の回答を使います）。');
   form.setAllowResponseEdits(true);
-  form.addTextItem().setTitle(Q.name).setRequired(true);
-  form.addListItem().setTitle(Q.grade).setChoiceValues(CONFIG.grades).setRequired(true);
-  form.addGridItem().setTitle(Q.lessons)
-    .setHelpText('受けたい科目に、授業の形式（集団・個別）と1週間の回数を選んでください。受けない科目は「' + NONE + '」のままで構いません。')
+  form.addTextItem().setTitle(q.name).setRequired(true);
+  form.addListItem().setTitle(q.grade).setChoiceValues(CONFIG.grades).setRequired(true);
+  form.addGridItem().setTitle(q.lessons)
+    .setHelpText('受けたい科目に、授業の形式（集団・個別）と' + (season ? '講習期間中' : '1週間') + 'の回数を選んでください。'
+      + '受けない科目は「' + NONE + '」のままで構いません。')
     .setRows(CONFIG.subjects)
     .setColumns(lessonChoices_());
-  form.addCheckboxGridItem().setTitle(Q.studentAvail)
-    .setHelpText('通塾できる時間すべてに○を付けてください（' + CONFIG.slotMinutes + '分ごと）。授業は1回'
+  form.addCheckboxGridItem().setTitle(q.studentAvail)
+    .setHelpText('通塾できる' + (season ? '日と' : '') + '時間すべてに○を付けてください（' + CONFIG.slotMinutes + '分ごと）。授業は1回'
       + lessonMinutes_() + '分なので、続けて○が付いている時間に入ります。多く付けるほど時間割が組みやすくなります。')
     .setRows(cellLabels_())
-    .setColumns(CONFIG.days);
-  form.addParagraphTextItem().setTitle(Q.note)
+    .setColumns(days_());
+  form.addParagraphTextItem().setTitle(q.note)
     .setHelpText('希望の先生、同じ日に固めたくない、などがあれば書いてください。');
   return form;
 }
 
 function makeTeacherForm_() {
-  var form = FormApp.create(CONFIG.juku + ' 出勤可能日アンケート（講師用）');
+  var q = q_(CONFIG);
+  var form = FormApp.create(formTitle_('出勤可能日アンケート（講師用）'));
   form.setDescription('担当できる科目と、出勤できる時間を教えてください。答え直すときは同じ氏名でもう一度送ってください（最後の回答を使います）。');
   form.setAllowResponseEdits(true);
-  form.addTextItem().setTitle(Q.name).setRequired(true);
-  form.addCheckboxItem().setTitle(Q.teacherSubjects).setChoiceValues(CONFIG.subjects).setRequired(true);
-  form.addCheckboxItem().setTitle(Q.teacherForms).setChoiceValues(FORMS).setRequired(true);
-  form.addTextItem().setTitle(Q.teacherMax)
+  form.addTextItem().setTitle(q.name).setRequired(true);
+  form.addCheckboxItem().setTitle(q.teacherSubjects).setChoiceValues(CONFIG.subjects).setRequired(true);
+  form.addCheckboxItem().setTitle(q.teacherForms).setChoiceValues(FORMS).setRequired(true);
+  form.addTextItem().setTitle(q.teacherMax)
     .setHelpText('上限がなければ空のままで構いません。')
     .setValidation(FormApp.createTextValidation().requireWholeNumber().setHelpText('数字で入力してください').build());
-  form.addCheckboxGridItem().setTitle(Q.teacherAvail)
-    .setHelpText('出勤できる時間すべてに○を付けてください（' + CONFIG.slotMinutes + '分ごと）。')
+  form.addCheckboxGridItem().setTitle(q.teacherAvail)
+    .setHelpText('出勤できる' + (isSeason_(CONFIG) ? '日と' : '') + '時間すべてに○を付けてください（' + CONFIG.slotMinutes + '分ごと）。')
     .setRows(cellLabels_())
-    .setColumns(CONFIG.days);
+    .setColumns(days_());
   return form;
 }
 
@@ -203,16 +252,48 @@ function confirm_(msg) {
 
 // ===== ここから下は回答を表にする処理（Apps Script 以外でも動く） =====
 
-function komaLabels_(cfg) {
+/** コマ割（講習期は season.komas）。 */
+function komas_(cfg) {
   cfg = cfg || CONFIG;
-  return cfg.komas.map(function (k) { return k.no + '限 ' + k.start + '〜' + k.end; });
+  return isSeason_(cfg) && cfg.season.komas ? cfg.season.komas : cfg.komas;
 }
 
+/**
+ * 空き時間を聞く日。通常期は曜日（月, 火, …）、講習期は期間の日付から休みを除いた「12/24(木)」の形
+ * （アプリの講習期の空き時間の列「12/24(木)16:00」と同じ書き方）。
+ */
+function days_(cfg) {
+  cfg = cfg || CONFIG;
+  if (!isSeason_(cfg)) return cfg.days;
+  var s = cfg.season;
+  var W = ['日', '月', '火', '水', '木', '金', '土'];
+  var closed = {};
+  (s.closedDates || []).forEach(function (d) { closed[d] = true; });
+  var ymd = function (text) { var p = String(text).split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]); };
+  var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+  var out = [];
+  for (var d = ymd(s.start), end = ymd(s.end); d <= end; d.setDate(d.getDate() + 1)) {
+    var iso = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    var wd = W[d.getDay()];
+    if ((s.closedWeekdays || []).indexOf(wd) >= 0 || closed[iso]) continue;
+    out.push((d.getMonth() + 1) + '/' + d.getDate() + '(' + wd + ')');
+  }
+  return out;
+}
+
+function komaLabels_(cfg) {
+  cfg = cfg || CONFIG;
+  return komas_(cfg).map(function (k) { return k.no + '限 ' + k.start + '〜' + k.end; });
+}
+
+/** 受講の選択肢。通常期は「個別 週2回」、講習期は講習期間全体の回数で「個別 6回」。 */
 function lessonChoices_(cfg) {
   cfg = cfg || CONFIG;
+  var season = isSeason_(cfg);
+  var max = season ? cfg.season.maxTimes || 10 : cfg.maxTimesPerWeek;
   var out = [NONE];
   FORMS.forEach(function (f) {
-    for (var n = 1; n <= cfg.maxTimesPerWeek; n++) out.push(f + ' 週' + n + '回');
+    for (var n = 1; n <= max; n++) out.push(f + (season ? ' ' : ' 週') + n + '回');
   });
   return out;
 }
@@ -229,15 +310,15 @@ function toHhmm_(min) {
 
 function lessonMinutes_(cfg) {
   cfg = cfg || CONFIG;
-  var k = cfg.komas[0];
+  var k = komas_(cfg)[0];
   return toMin_(k.end) - toMin_(k.start);
 }
 
 /** 空き時間の枠の開始（分）。最初のコマの開始から最後のコマの終了まで、slotMinutes 刻み。 */
 function cellStarts_(cfg) {
   cfg = cfg || CONFIG;
-  var first = Math.min.apply(null, cfg.komas.map(function (k) { return toMin_(k.start); }));
-  var last = Math.max.apply(null, cfg.komas.map(function (k) { return toMin_(k.end); }));
+  var first = Math.min.apply(null, komas_(cfg).map(function (k) { return toMin_(k.start); }));
+  var last = Math.max.apply(null, komas_(cfg).map(function (k) { return toMin_(k.end); }));
   var out = [];
   for (var t = first; t < last; t += cfg.slotMinutes) out.push(t);
   return out;
@@ -249,10 +330,10 @@ function cellLabels_(cfg) {
   return cellStarts_(cfg).map(function (t) { return toHhmm_(t) + '〜' + toHhmm_(t + cfg.slotMinutes); });
 }
 
-/** 空き時間シートの列（例：月16:00）。 */
+/** 空き時間シートの列（例：月16:00、講習期は 12/24(木)16:00）。 */
 function slotLabels_(cfg) {
   var out = [];
-  cfg.days.forEach(function (d) { cellStarts_(cfg).forEach(function (t) { out.push(d + toHhmm_(t)); }); });
+  days_(cfg).forEach(function (d) { cellStarts_(cfg).forEach(function (t) { out.push(d + toHhmm_(t)); }); });
   return out;
 }
 
@@ -324,7 +405,7 @@ function idFor_(prev, prefix, key) {
 }
 
 function komaSheet(cfg) {
-  return [['コマ', '開始', '終了']].concat(cfg.komas.map(function (k) { return [k.no, k.start, k.end]; }));
+  return [['コマ', '開始', '終了']].concat(komas_(cfg).map(function (k) { return [k.no, k.start, k.end]; }));
 }
 
 /**
@@ -334,7 +415,9 @@ function komaSheet(cfg) {
 function buildStudentSheets(responses, cfg, previous) {
   var prev = previousIds_(previous, '生徒ID');
   var slots = slotLabels_(cfg);
-  var requests = [['生徒ID', '氏名', '学年', '科目', '形式', '週の回数', '希望講師（任意）', '固定（任意）', '要望']];
+  var Q = q_(cfg);
+  var requests = [['生徒ID', '氏名', '学年', '科目', '形式', isSeason_(cfg) ? '回数' : '週の回数',
+    '希望講師（任意）', '固定（任意）', '要望']];
   var avail = [['生徒ID', '氏名'].concat(slots)];
   var warnings = [];
   latestByName_(responses).forEach(function (r) {
@@ -345,7 +428,7 @@ function buildStudentSheets(responses, cfg, previous) {
     var lessons = a[Q.lessons] || [];
     var count = 0;
     cfg.subjects.forEach(function (subj, i) {
-      var m = String(lessons[i] || '').match(/^(集団|個別) 週(\d+)回$/);
+      var m = String(lessons[i] || '').match(/^(集団|個別) (?:週)?(\d+)回$/);
       if (!m) return;
       var keep = prev.extra[key + '\t' + subj] || {};
       requests.push([id, name, a[Q.grade] || '', subj, m[1], m[2],
@@ -367,7 +450,8 @@ function buildStudentSheets(responses, cfg, previous) {
 function buildTeacherSheets(responses, cfg, previous) {
   var prev = previousIds_(previous, '講師ID');
   var slots = slotLabels_(cfg);
-  var teachers = [['講師ID', '氏名'].concat(cfg.subjects, ['集団可', '個別可', '週の上限コマ'])];
+  var Q = q_(cfg);
+  var teachers = [['講師ID', '氏名'].concat(cfg.subjects, ['集団可', '個別可', isSeason_(cfg) ? '上限コマ' : '週の上限コマ'])];
   var avail = [['講師ID', '氏名'].concat(slots)];
   var warnings = [];
   latestByName_(responses).forEach(function (r) {
@@ -391,7 +475,7 @@ function buildTeacherSheets(responses, cfg, previous) {
 if (typeof module !== 'undefined') {
   module.exports = {
     CONFIG: CONFIG, Q: Q, komaSheet: komaSheet, lessonChoices_: lessonChoices_, komaLabels_: komaLabels_,
-    cellLabels_: cellLabels_,
+    cellLabels_: cellLabels_, days_: days_, q_: q_,
     buildStudentSheets: buildStudentSheets, buildTeacherSheets: buildTeacherSheets,
   };
 }

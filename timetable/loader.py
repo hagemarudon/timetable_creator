@@ -4,11 +4,12 @@ from __future__ import annotations
 import io
 import re
 import tomllib
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
-from .model import FORMS, Koma, Problem, Request, Settings, Slot, Student, Teacher
+from .model import FORMS, MODE_SEASON, MODE_WEEKLY, Koma, Problem, Request, Season, Settings, Slot, Student, Teacher
 
 SHEET_KOMA = "コマ設定"
 SHEET_STUDENT_REQ = "生徒_受講希望"
@@ -21,7 +22,10 @@ MARKS = {"○", "◯", "〇", "o", "O", "1", "true", "TRUE", "True", "✓", "✔
 
 
 # 「講師_担当可能科目」シートで科目ではない列。これ以外の列見出しはすべて科目として扱う
-TEACHER_INFO_COLS = {"講師ID", "氏名", "集団可", "個別可", "週の上限コマ", "備考", "メモ"}
+TEACHER_INFO_COLS = {"講師ID", "氏名", "集団可", "個別可", "週の上限コマ", "上限コマ", "備考", "メモ"}
+# 回数・上限コマの列は、通常期は「週の回数」「週の上限コマ」、講習期は「回数」「上限コマ」。どちらの名前でも読む
+COUNT_COLUMNS = ["回数", "週の回数"]
+LIMIT_COLUMNS = ["上限コマ", "週の上限コマ"]
 
 LOCAL_CONFIG_NAME = "config.local.toml"
 
@@ -45,9 +49,13 @@ def load_settings(path: str | Path, overlay: str | Path | None = None) -> Settin
     if overlay is not None and Path(overlay).exists():
         with open(overlay, "rb") as f:
             c = _merge(c, tomllib.load(f))
+    komas = _komas(c["komas"])
+    mode = str(c.get("mode", MODE_WEEKLY))
+    if mode not in (MODE_WEEKLY, MODE_SEASON):
+        raise ValueError(f"設定の mode は「{MODE_WEEKLY}」か「{MODE_SEASON}」にしてください（今は「{mode}」）。")
     return Settings(
-        days=list(c["days"]),
-        komas=[Koma(int(k["no"]), str(k["start"]), str(k["end"])) for k in c["komas"]],
+        weekdays=list(c["days"]),
+        weekly_komas=komas,
         individual_booths=int(c["rooms"]["individual_booths"]),
         group_rooms=int(c["rooms"]["group_rooms"]),
         max_students_per_teacher=int(c["individual"]["max_students_per_teacher"]),
@@ -55,6 +63,30 @@ def load_settings(path: str | Path, overlay: str | Path | None = None) -> Settin
         group_capacity=int(c["group"]["capacity"]),
         time_limit_seconds=float(c["solver"]["time_limit_seconds"]),
         weights={k: int(v) for k, v in c["weights"].items()},
+        season=_season(c.get("season", {}), komas),
+        mode=mode,
+    )
+
+
+def _komas(rows) -> list[Koma]:
+    return [Koma(int(k["no"]), str(k["start"]), str(k["end"])) for k in rows]
+
+
+def _date(v) -> date:
+    """設定の日付（TOML の日付 2026-12-24 でも、文字の "2026-12-24" でもよい）。"""
+    return v if isinstance(v, date) else date.fromisoformat(str(v).strip())
+
+
+def _season(c: dict, weekly_komas: list[Koma]) -> Season:
+    """講習期の設定。無い項目は仮の値（今日から2週間・通常期と同じコマ割）にする。"""
+    start = _date(c["start"]) if "start" in c else date.today()
+    end = _date(c["end"]) if "end" in c else date.fromordinal(start.toordinal() + 13)
+    return Season(
+        name=str(c.get("name", "講習")),
+        start=start, end=end,
+        komas=_komas(c["komas"]) if c.get("komas") else list(weekly_komas),
+        closed_weekdays=list(c.get("closed_weekdays", [])),
+        closed_dates=[_date(d) for d in c.get("closed_dates", [])],
     )
 
 
@@ -89,9 +121,14 @@ def subjects_from_sheet(df: pd.DataFrame) -> list[str]:
             if c and c not in TEACHER_INFO_COLS and not c.startswith("Unnamed")]
 
 
-# 空き時間を30分ごとに書いた列（例：「月16:00」）。Googleフォームの空き時間はこの形でまとめる
+# 空き時間の列の見出し。日は曜日（月）か日付（12/24、12/24(木)）、そのあとにコマ番号か30分の枠の開始時刻
+#   コマ：「月1」「12/24(木)1」（「12/24 1」「12/24-1限」も可）
+#   30分の枠：「月16:00」「12/24(木)16:00」（16:00〜16:30）。Googleフォームの空き時間はこの形でまとめる
 CELL_MINUTES = 30
-CELL_COL = re.compile(r"([月火水木金土日])(\d{1,2}):(\d{2})")
+_DAY = r"(?P<day>(?P<wd>[月火水木金土日])|(?P<mon>\d{1,2})/(?P<dom>\d{1,2})(?:[(（][月火水木金土日][)）])?)"
+_SEP = r"[\s_\-－]?"
+KOMA_COL = re.compile(_DAY + _SEP + r"(?P<koma>\d{1,2})限?")
+CELL_COL = re.compile(_DAY + _SEP + r"(?P<h>\d{1,2})[:：](?P<m>\d{2})")
 
 
 def _minutes(hhmm: str) -> int:
@@ -105,23 +142,79 @@ def _cells(start: str, end: str) -> list[int]:
     return list(range(s // CELL_MINUTES * CELL_MINUTES, e, CELL_MINUTES))
 
 
+def _day_key(m: re.Match) -> str:
+    """見出しの日の部分を、書き方の違いをならしたキーにする（「月」、「12/05(土)」→「12/5」）。"""
+    return m["wd"] if m["wd"] else f"{int(m['mon'])}/{int(m['dom'])}"
+
+
+def _day_lookup(settings: Settings) -> dict[str, str]:
+    """見出しの日のキー → 設定の開講日（「月」や「12/24(木)」）。"""
+    out = {}
+    for d in settings.days:
+        m = re.match(r"(\d{1,2})/(\d{1,2})", d)
+        out[f"{int(m[1])}/{int(m[2])}" if m else d] = d
+    return out
+
+
+def parse_slot(text: str, settings: Settings) -> Slot | None:
+    """「月1」「12/24(木)1」のようなコマの書き方を Slot にする。設定のコマ割に無ければ None。"""
+    m = KOMA_COL.fullmatch(text.strip())
+    if not m:
+        return None
+    day = _day_lookup(settings).get(_day_key(m))
+    koma = int(m["koma"])
+    return Slot(day, koma) if day and any(k.no == koma for k in settings.komas) else None
+
+
+def _mode_hint(settings: Settings, date_style: bool) -> str:
+    if settings.is_season and not date_style:
+        return (f"空き時間の列が曜日（月1・月16:00など）になっています。{MODE_SEASON}の時間割は日付の列"
+                f"（{settings.days[0] if settings.days else '12/24(木)'}1 など）で読みます。"
+                f"毎週の時間割を作るときは、左の「時間割の種類」を「{MODE_WEEKLY}」にしてください。")
+    if not settings.is_season and date_style:
+        return (f"空き時間の列が日付（12/24(木)1 など）になっています。講習など日付ごとの時間割を作るときは、"
+                f"左の「時間割の種類」を「{MODE_SEASON}」にして、期間をこの日付に合わせてください。")
+    return ""
+
+
 def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet: str,
-                       errors: list[str]) -> dict[str, set[Slot]]:
-    """空き時間を読む。列は「月1」（コマ）か「月16:00」（30分の枠）のどちらでもよい。
+                       errors: list[str]) -> dict[str, set[Slot]] | None:
+    """空き時間を読む。列は「月1」（コマ）か「月16:00」（30分の枠）のどちらでもよい（講習期は「12/24(木)1」など）。
 
     30分の枠で書いた場合は、そのコマの時間にかかる枠すべてに○があればコマが空いているとする。
+    開講日の空き時間の列が1つも無いときは None を返す（時間割の種類と入力が合っていないときなど）。
     """
-    valid = {s.label: s for s in settings.slots}
-    slot_cols = [c for c in df.columns if c in valid]
+    lookup = _day_lookup(settings)
+    koma_nos = {k.no for k in settings.komas}
+    slot_cols: dict[str, Slot] = {}
     cell_cols: dict[tuple[str, int], str] = {}
+    other_days: dict[str, bool] = {}   # 開講日に無い日（見出しのまま）→ 日付の書き方か
+    unknown_komas: list[str] = []
     for c in df.columns:
-        if m := CELL_COL.fullmatch(c):
-            cell_cols[m[1], int(m[2]) * 60 + int(m[3])] = c
+        m = KOMA_COL.fullmatch(c) or CELL_COL.fullmatch(c)
+        if not m:
+            continue
+        day = lookup.get(_day_key(m))
+        if day is None:
+            other_days.setdefault(m["day"], bool(m["mon"]))
+        elif "koma" in m.re.groupindex:
+            if int(m["koma"]) in koma_nos:
+                slot_cols[c] = Slot(day, int(m["koma"]))
+            else:
+                unknown_komas.append(c)
+        else:
+            cell_cols[day, int(m["h"]) * 60 + int(m["m"])] = c
     if not slot_cols and not cell_cols:
-        errors.append(f"「{sheet}」に「月1」や「月16:00」のような空き時間の列がありません。")
-    unknown = [c for c in df.columns if re.fullmatch(r"[月火水木金土日]\d+", c) and c not in valid]
-    if unknown:
-        errors.append(f"「{sheet}」の列 {', '.join(unknown)} は設定のコマ割にありません（無視します）。")
+        hint = _mode_hint(settings, any(other_days.values())) if other_days else ""
+        errors.append(f"「{sheet}」：" + hint if hint else
+                      f"「{sheet}」に、開講日の「{settings.slots[0].label if settings.slots else '月1'}」や"
+                      "「…16:00」のような空き時間の列がありません。")
+        return None
+    if other_days:
+        word = "期間の授業日" if settings.is_season else "開講曜日"
+        errors.append(f"「{sheet}」の {'・'.join(other_days)} の列は{word}に無いので、無視します。")
+    if unknown_komas:
+        errors.append(f"「{sheet}」の列 {', '.join(unknown_komas)} は設定のコマ割にありません（無視します）。")
     komas = {k.no: k for k in settings.komas}
     # 30分の枠で決めるコマ（コマの時間にかかる枠の列がすべてあるもの）
     by_cells = {sl: [cell_cols[sl.day, t] for t in _cells(komas[sl.koma].start, komas[sl.koma].end)]
@@ -130,7 +223,8 @@ def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet:
                                      for t in _cells(komas[sl.koma].start, komas[sl.koma].end))}
     if cell_cols:
         days = {d for d, _ in cell_cols}
-        lack = [sl.label for sl in settings.slots if sl.day in days and sl not in by_cells and sl.label not in slot_cols]
+        lack = [sl.label for sl in settings.slots
+                if sl.day in days and sl not in by_cells and sl not in slot_cols.values()]
         if lack:
             errors.append(f"「{sheet}」の30分の枠の列が、コマ {'・'.join(lack)} の時間をすべては含んでいません"
                           "（そのコマは空いていないものとします）。")
@@ -139,20 +233,22 @@ def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet:
         pid = row.get(id_col, "")
         if not pid:
             continue
-        out[pid] = ({valid[c] for c in slot_cols if _marked(row[c])}
+        out[pid] = ({sl for c, sl in slot_cols.items() if _marked(row[c])}
                     | {sl for sl, cols in by_cells.items() if all(_marked(row[c]) for c in cols)})
     return out
 
 
 def _read_fixed(text: str, req: Request, student: Student, teachers: dict[str, Teacher],
                 settings: Settings, where: str, errors: list[str]) -> list[Slot]:
-    """「固定」列（例：「月1」「月1、木2」）を読む。入れられないコマは注意を出して外す。"""
-    valid = {s.label: s for s in settings.slots}
+    """「固定」列（例：「月1」「月1、木2」、講習期は「12/24(木)1、12/25(金)2」）を読む。
+
+    入れられないコマは注意を出して外す。
+    """
     fixed: list[Slot] = []
     for label in re.split(r"[、,，・\s]+", text):
         if not label:
             continue
-        sl = valid.get(label)
+        sl = parse_slot(label, settings)
         if sl is None:
             errors.append(f"{where}：固定の「{label}」は設定のコマ割にありません（無視します）。")
             continue
@@ -171,7 +267,7 @@ def _read_fixed(text: str, req: Request, student: Student, teachers: dict[str, T
             errors.append(f"{where}：希望講師 {req.preferred_teacher} は{label}に入れないため、固定は他の講師で入れます。")
         fixed.append(sl)
     if len(fixed) > req.times:
-        errors.append(f"{where}：固定のコマが週の回数（{req.times}）より多いです（先の{req.times}コマだけ使います）。")
+        errors.append(f"{where}：固定のコマが{settings.count_column}（{req.times}）より多いです（先の{req.times}コマだけ使います）。")
         fixed = fixed[:req.times]
     return fixed
 
@@ -205,8 +301,10 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
     t_df = _clean(dfs[SHEET_TEACHER])
     t_av_df = _clean(dfs[SHEET_TEACHER_AVAIL])
 
+    # 回数の列は「回数」か「週の回数」（講習期でも「週の回数」の列のまま読めるようにする）
+    count_col = next((c for c in COUNT_COLUMNS if c in req_df.columns), settings.count_column)
     for sheet, df, cols in [
-        (SHEET_STUDENT_REQ, req_df, ["生徒ID", "氏名", "学年", "科目", "形式", "週の回数"]),
+        (SHEET_STUDENT_REQ, req_df, ["生徒ID", "氏名", "学年", "科目", "形式", count_col]),
         (SHEET_STUDENT_AVAIL, st_av_df, ["生徒ID"]),
         (SHEET_TEACHER, t_df, ["講師ID", "氏名", "集団可", "個別可"]),
         (SHEET_TEACHER_AVAIL, t_av_df, ["講師ID"]),
@@ -222,6 +320,8 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
 
     st_avail = _read_availability(st_av_df, "生徒ID", settings, SHEET_STUDENT_AVAIL, errors)
     t_avail = _read_availability(t_av_df, "講師ID", settings, SHEET_TEACHER_AVAIL, errors)
+    if st_avail is None or t_avail is None:
+        return None, errors
 
     teachers: dict[str, Teacher] = {}
     for _, r in t_df.iterrows():
@@ -231,7 +331,7 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
         if tid in teachers:
             errors.append(f"講師ID {tid} が「{SHEET_TEACHER}」で重複しています。")
             continue
-        limit = r.get("週の上限コマ", "")
+        limit = next((r[c] for c in LIMIT_COLUMNS if c in t_df.columns and r[c]), "")
         teachers[tid] = Teacher(
             id=tid, name=r["氏名"],
             subjects={s for s in subjects if _marked(r[s])},
@@ -261,8 +361,8 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
         if r["形式"] not in FORMS:
             errors.append(f"「{SHEET_STUDENT_REQ}」{row_no}行目：形式は「集団」か「個別」にしてください。")
             continue
-        if not r["週の回数"].isdigit() or int(r["週の回数"]) < 1:
-            errors.append(f"「{SHEET_STUDENT_REQ}」{row_no}行目：週の回数は1以上の数字にしてください。")
+        if not r[count_col].isdigit() or int(r[count_col]) < 1:
+            errors.append(f"「{SHEET_STUDENT_REQ}」{row_no}行目：{count_col}は1以上の数字にしてください。")
             continue
         key = (sid, r["科目"])
         if key in seen:
@@ -273,7 +373,7 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
         if pref and pref not in teachers:
             errors.append(f"「{SHEET_STUDENT_REQ}」{row_no}行目：希望講師 {pref} が講師一覧にありません（無視します）。")
             pref = ""
-        req = Request(len(requests), sid, r["科目"], r["形式"], int(r["週の回数"]), pref or None)
+        req = Request(len(requests), sid, r["科目"], r["形式"], int(r[count_col]), pref or None)
         req.fixed = _read_fixed(r.get("固定（任意）", "") or r.get("固定", ""), req, students[sid], teachers,
                                 settings, f"「{SHEET_STUDENT_REQ}」{row_no}行目", errors)
         requests.append(req)

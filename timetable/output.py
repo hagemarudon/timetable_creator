@@ -12,7 +12,7 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from .model import Problem, Result
+from .model import Problem, Result, date_label
 from .previous import SHEET_PREVIOUS, previous_sheet
 
 SHEET_SCHEDULE = "スケジュール表"
@@ -232,10 +232,30 @@ def _schedule_text(problem: Problem, ls, view: View) -> str:
     return text
 
 
-def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View()) -> None:
-    """紙のスケジュール表と同じ形で書く。
+def schedule_pages(problem: Problem) -> list[tuple[str, list[str]]]:
+    """スケジュール表のシート名と、そのシートに並べる日。
 
-    曜日ごとに「時刻の列＋その日に授業がある講師の列＋予備の列」を横に並べ、
+    通常期は1枚に全曜日を並べる。講習期は日付が多いので、1週間（月〜日）ごとに1枚にする。
+    """
+    s = problem.settings
+    if not s.is_season:
+        return [(SHEET_SCHEDULE, list(s.days))]
+    pages: list[tuple[str, list[str]]] = []
+    week = None
+    for d in s.season.dates():
+        if d.isocalendar()[:2] != week:
+            week = d.isocalendar()[:2]
+            # シート名に「/」は使えないので「12月24日〜」の形にする
+            pages.append((f"{SHEET_SCHEDULE} {d.month}月{d.day}日〜", []))
+        pages[-1][1].append(date_label(d))
+    return pages or [(SHEET_SCHEDULE, [])]
+
+
+def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View(),
+                         days: list[str] | None = None) -> None:
+    """紙のスケジュール表と同じ形で書く。days を渡すと、その日だけを並べる（講習期の1週間分など）。
+
+    曜日（講習期は日付）ごとに「時刻の列＋その日に授業がある講師の列＋予備の列」を横に並べ、
     行は30分刻みの時刻、授業はコマの時間ぶんの行をまとめた縦長の1マスに縦書きで書く。
     上に曜日と講師名、下にも講師名と曜日を入れる（講師名も縦書き）。
     """
@@ -258,7 +278,7 @@ def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View
     komas = {k.no: k for k in problem.settings.komas}
 
     col = 1
-    for d in problem.settings.days:
+    for d in problem.settings.days if days is None else days:
         teachers = [(tid, t.name) for tid, t in problem.teachers.items()
                     if any(ls.slot.day == d and ls.teacher_id == tid for ls in result.lessons)]
         teachers.append((None, SPARE))
@@ -337,7 +357,9 @@ def to_xlsx(problem: Problem, result: Result, view: View = View()) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         # 最初のシートは紙のスケジュール表と同じ形（講師列の表を、時刻の行とまとめたマスで書いたもの）
-        write_schedule_sheet(xw.book.create_sheet(SHEET_SCHEDULE), problem, result, view)
+        # 講習期は1週間ごとに1枚
+        for name, days in schedule_pages(problem):
+            write_schedule_sheet(xw.book.create_sheet(name), problem, result, view, days)
         for name, df in all_sheets(problem, result, view).items():
             if name == SHEET_TEACHER_COLUMNS:
                 continue
