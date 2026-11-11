@@ -102,14 +102,14 @@ function onOpen() {
     .addItem('回答を入力シートにまとめる', '入力シートを作る')
     .addItem('フォームのURLを表示', 'フォームのURLを表示')
     .addSeparator()
-    .addItem('新しい期を始める（通常授業。前の回答を使わない）', '新しい期を始める')
-    .addItem('新しい講習を始める（前の講習の回答を使わない）', '新しい講習を始める')
+    .addItem('新しい期を始める（通常授業。回答を使い始める日付を入れる）', '新しい期を始める')
+    .addItem('新しい講習を始める（回答を使い始める日付を入れる）', '新しい講習を始める')
     .addToUi();
 }
 
 // ===== 新しい期を始める =====
 // 学期や講習が変わると生徒・講師も変わるので、前の期の回答を新しい時間割に混ぜないようにする。
-// 「新しい期を始める」を押した日時を覚えておき、まとめるときはそれより前に送られた回答を使わない。
+// 「新しい期を始める」で回答を使い始める日付を入れておき、まとめるときはその日より前に送られた回答を使わない。
 // 前の期にまとめたシートの「希望講師（任意）」「固定（任意）」と生徒ID・講師IDも引き継がない。
 // 通常授業と講習は別々に区切る（冬期講習を始めても、通常授業の回答はそのまま使う）。
 var PROP_TERM = 'termStart';
@@ -127,33 +127,54 @@ function termKey_(prop, season) {
   return prop + (season ? '_season' : '');
 }
 
-function startTerm_(season, askFirst) {
+function startTerm_(season) {
   var kind = season ? '講習' : '通常授業';
-  if (askFirst !== false && !confirm_('今から新しい' + (season ? '講習' : '期') + 'の回答を集めます。\n'
-      + '「回答を入力シートにまとめる」では、今より前に送られた' + kind + 'の回答を使いません'
-      + '（前にまとめたシートの希望講師・固定・IDも引き継ぎません）。よろしいですか？')) {
+  var props = PropertiesService.getDocumentProperties();
+  var current = Number(props.getProperty(termKey_(PROP_TERM, season)) || 0);
+  var ui = SpreadsheetApp.getUi();
+  var res = ui.prompt(kind + '：回答を使い始める日付',
+    'この日付より前に送られた' + kind + 'の回答は、「回答を入力シートにまとめる」で使いません'
+      + '（前の期にまとめたシートの希望講師・固定・IDも引き継ぎません）。\n'
+      + '日付を「2026/8/25」の形で入れてください（空のまま OK なら今日）。'
+      + (current ? '\n今の設定：' + formatDate_(current) + ' から' : ''),
+    ui.ButtonSet.OK_CANCEL);
+  if (res.getSelectedButton() !== ui.Button.OK) return false;
+  var text = res.getResponseText().trim();
+  var since = text ? parseDate_(text, new Date()) : parseDate_('', new Date());
+  if (since === null) {
+    ui.alert('「' + text + '」は日付として読めませんでした。「2026/8/25」の形で入れてください。');
     return false;
   }
-  var now = Date.now();
-  PropertiesService.getDocumentProperties().setProperty(termKey_(PROP_TERM, season), String(now));
-  var msg = kind + '：' + formatTime_(now) + ' より前の回答は、これから使いません。';
+  props.setProperty(termKey_(PROP_TERM, season), String(since));
+  var msg = kind + '：' + formatDate_(since) + ' より前に送られた回答は、これから使いません。';
   Logger.log(msg);
-  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* エディタから実行したときはログだけ */ }
+  ui.alert(msg);
   return true;
+}
+
+/**
+ * 「2026/8/25」「2026-08-25」「8/25」（今年）を、その日の0時（ミリ秒）にする。空なら今日。読めなければ null。
+ * today はテスト用（年と「今日」を決める）。
+ */
+function parseDate_(text, today) {
+  text = String(text || '').trim().replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+  if (!text) return new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  var m = text.match(/^(?:(\d{4})[\/\-.年])?(\d{1,2})[\/\-.月](\d{1,2})日?$/);
+  if (!m) return null;
+  var y = m[1] ? Number(m[1]) : today.getFullYear();
+  var d = new Date(y, Number(m[2]) - 1, Number(m[3]));
+  return d.getMonth() === Number(m[2]) - 1 && d.getDate() === Number(m[3]) ? d.getTime() : null;
+}
+
+function formatDate_(ms) {
+  var d = new Date(ms);
+  return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate();
 }
 
 /** 区切りの日時（ミリ秒）より前の回答を外す。{kept: 使う回答, dropped: 外した数}。since が 0 なら全部使う。 */
 function termFilter_(responses, since) {
   var kept = (responses || []).filter(function (r) { return !since || r.time >= since; });
   return { kept: kept, dropped: (responses || []).length - kept.length };
-}
-
-function formatTime_(ms) {
-  try {
-    return Utilities.formatDate(new Date(ms), Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm');
-  } catch (e) {
-    return new Date(ms).toISOString();
-  }
 }
 
 // ===== フォームを作る =====
@@ -352,7 +373,7 @@ function 入力シートを作る() {
     var kind = season ? '講習' : '通常授業';
     msgs.push(kind + '（' + mine.map(function (f) { return '「' + f.title + '」'; }).join('・') + '）：生徒 '
       + (students.avail.length - 1) + '人・講師 ' + (teachers.avail.length - 1) + '人'
-      + (since ? '。' + formatTime_(since) + ' 以降の回答だけを使いました'
+      + (since ? '。' + formatDate_(since) + ' 以降の回答だけを使いました'
         + (dropped ? '（それより前の ' + dropped + ' 件は使っていません）' : '') : '')
       + (season ? '。シート名の頭に「' + SEASON_PREFIX + '」を付けました' : ''));
     students.warnings.concat(teachers.warnings).forEach(function (w) { warnings.push(kind + '：' + w); });
@@ -746,7 +767,7 @@ if (typeof module !== 'undefined') {
   module.exports = {
     CONFIG: CONFIG, Q: Q, komaSheet: komaSheet, lessonChoices_: lessonChoices_, komaLabels_: komaLabels_,
     cellLabels_: cellLabels_, days_: days_, q_: q_, cfgFor_: cfgFor_, formTitle_: formTitle_, sheetName_: sheetName_,
-    isSeasonTitle_: isSeasonTitle_, termFilter_: termFilter_, availRows_: availRows_, availChoices_: availChoices_,
+    isSeasonTitle_: isSeasonTitle_, termFilter_: termFilter_, parseDate_: parseDate_, availRows_: availRows_, availChoices_: availChoices_,
     buildStudentSheets: buildStudentSheets, buildTeacherSheets: buildTeacherSheets,
   };
 }
