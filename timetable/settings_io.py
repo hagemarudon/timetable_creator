@@ -1,12 +1,15 @@
 """画面から入力した条件を扱う（コマ割の生成と設定ファイルへの保存）。"""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .model import Koma, Settings
+from .model import WEEKDAYS, Koma, Season, Settings
 
-ALL_DAYS = ["月", "火", "水", "木", "金", "土", "日"]
+ALL_DAYS = WEEKDAYS
+# 講習期の期間の長さの目安（これより長いと計算に時間がかかる）
+SEASON_MAX_DAYS = 45
 
 
 def _to_min(hhmm: str) -> int:
@@ -54,19 +57,56 @@ def check_komas(komas: list[Koma]) -> list[str]:
     return errors
 
 
+def check_season(season: Season) -> list[str]:
+    """講習期の期間と休みを確かめる。"""
+    if season.end < season.start:
+        return ["講習の最終日が初日より前になっています。"]
+    if not season.dates():
+        return ["講習の期間に授業をする日がありません（休みの曜日・休みの日を見直してください）。"]
+    if len(season.all_dates()) > SEASON_MAX_DAYS:
+        return [f"講習の期間が{len(season.all_dates())}日あります。{SEASON_MAX_DAYS}日までにしてください"
+                "（長い期間は計算が終わらなくなります。前半・後半に分けて作ってください）。"]
+    return []
+
+
+def _quoted(values) -> str:
+    return ", ".join(f'"{v}"' for v in values)
+
+
+def _koma_lines(table: str, komas: list[Koma]) -> list[str]:
+    lines = []
+    for k in komas:
+        lines += [f"[[{table}]]", f"no = {k.no}", f'start = "{k.start}"', f'end = "{k.end}"', ""]
+    return lines
+
+
 def save_settings(settings: Settings, path: str | Path) -> None:
-    """条件を config.toml と同じ形で保存する（config.local.toml に保存し、次回からの初期値になる）。"""
-    days = ", ".join(f'"{d}"' for d in settings.days)
+    """条件を config.toml と同じ形で保存する（config.local.toml に保存し、次回からの初期値になる）。
+
+    通常期と講習期の条件は両方とも保存し、今の時間割の種類（mode）も次回の初期値にする。
+    """
+    season = settings.season
     lines = [
         "# 塾の時間割作成の設定（画面の「この条件を既定にする」で保存）",
         "",
-        "# 開講曜日",
-        f"days = [{days}]",
+        "# 時間割の種類（\"通常期\" = 毎週同じ曜日の時間割、\"講習期\" = 講習の日付ごとの時間割）",
+        f'mode = "{settings.mode}"',
         "",
-        "# コマ割（番号, 開始, 終了）",
+        "# 開講曜日（通常期）",
+        f"days = [{_quoted(settings.weekdays)}]",
+        "",
+        "# コマ割（通常期。番号, 開始, 終了）",
+        *_koma_lines("komas", settings.weekly_komas),
+        "# 講習期の期間とコマ割",
+        "[season]",
+        f"name = {json.dumps(season.name, ensure_ascii=False)}",
+        f"start = {season.start.isoformat()}",
+        f"end = {season.end.isoformat()}",
+        f"closed_weekdays = [{_quoted(season.closed_weekdays)}]",
+        f"closed_dates = [{', '.join(d.isoformat() for d in season.closed_dates)}]",
+        "",
+        *_koma_lines("season.komas", season.komas),
     ]
-    for k in settings.komas:
-        lines += ["[[komas]]", f"no = {k.no}", f'start = "{k.start}"', f'end = "{k.end}"', ""]
     w = settings.weights
     lines += [
         "[rooms]",

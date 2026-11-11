@@ -16,8 +16,16 @@ EXAMPLE_SUBJECTS = ["英語", "数学", "物理", "化学", "国語"]
 REQUEST_COLUMNS = ["生徒ID", "氏名", "学年", "科目", "形式", "週の回数", "希望講師（任意）", "固定（任意）"]
 
 
+def request_columns(settings: Settings) -> list[str]:
+    """「生徒_受講希望」の列。講習期は「週の回数」が講習期間全体の「回数」になる。"""
+    return [settings.count_column if c == "週の回数" else c for c in REQUEST_COLUMNS]
+
+
 def template_sheets(settings: Settings, problem: Problem | None = None) -> dict[str, pd.DataFrame]:
-    """雛形のシート。problem を渡すと、その生徒・講師のIDと氏名・科目の列を入れておく。"""
+    """雛形のシート。problem を渡すと、その生徒・講師のIDと氏名・科目の列を入れておく。
+
+    空き時間の列は今の時間割の種類に合わせる（通常期は「月1」、講習期は「12/24(木)1」）。
+    """
     subjects = (problem.subjects if problem and problem.subjects else EXAMPLE_SUBJECTS)
     slots = [s.label for s in settings.slots]
     students = [(p.id, p.name) for p in problem.students.values()] if problem else []
@@ -29,9 +37,9 @@ def template_sheets(settings: Settings, problem: Problem | None = None) -> dict[
 
     return {
         SHEET_KOMA: pd.DataFrame([{"コマ": k.no, "開始": k.start, "終了": k.end} for k in settings.komas]),
-        SHEET_STUDENT_REQ: pd.DataFrame(columns=REQUEST_COLUMNS),
+        SHEET_STUDENT_REQ: pd.DataFrame(columns=request_columns(settings)),
         SHEET_STUDENT_AVAIL: avail("生徒ID", students),
-        SHEET_TEACHER: pd.DataFrame(columns=["講師ID", "氏名", *subjects, "集団可", "個別可", "週の上限コマ"]),
+        SHEET_TEACHER: pd.DataFrame(columns=["講師ID", "氏名", *subjects, "集団可", "個別可", settings.limit_column]),
         SHEET_TEACHER_AVAIL: avail("講師ID", teachers),
     }
 
@@ -61,7 +69,8 @@ def make_template(settings: Settings, problem: Problem | None = None) -> bytes:
             elif name == SHEET_TEACHER:
                 _choices(ws, ["○"], 3, n - 1, last_row)
             elif name == SHEET_STUDENT_REQ:
-                _choices(ws, FORMS, REQUEST_COLUMNS.index("形式") + 1, REQUEST_COLUMNS.index("形式") + 1, last_row)
-                col = REQUEST_COLUMNS.index("科目") + 1
+                cols = list(df.columns)
+                _choices(ws, FORMS, cols.index("形式") + 1, cols.index("形式") + 1, last_row)
+                col = cols.index("科目") + 1
                 _choices(ws, subjects, col, col, last_row)
     return buf.getvalue()

@@ -1,6 +1,8 @@
 """動作確認用のサンプル入力（架空の生徒30人・講師8人）を作る。
 
-使い方: python make_sample.py sample/サンプル入力.xlsx
+使い方:
+  python make_sample.py sample/サンプル入力.xlsx                     # 通常期（曜日ごと）
+  python make_sample.py --season sample/サンプル入力_講習期.xlsx      # 講習期（config.toml の [season] の日付ごと）
 Googleスプレッドシートにアップロードすれば、そのまま入力の見本になります。
 """
 import random
@@ -10,9 +12,14 @@ from pathlib import Path
 import pandas as pd
 
 from timetable.loader import load_settings
+from timetable.model import MODE_SEASON
 
+args = [a for a in sys.argv[1:] if a != "--season"]
+SEASON = "--season" in sys.argv[1:]
 random.seed(7)
 settings = load_settings(Path(__file__).with_name("config.toml"))
+if SEASON:
+    settings.mode = MODE_SEASON
 slot_labels = [s.label for s in settings.slots]
 
 LAST = ["佐藤", "鈴木", "高橋", "田中", "伊藤", "渡辺", "山本", "中村", "小林", "加藤", "吉田", "山田", "松本", "井上", "木村"]
@@ -26,6 +33,10 @@ def name(i):
 
 
 def availability(n_days, komas_from):
+    """n_days 日（講習期は期間の日数に合わせて増やす）の、komas_from 限より後のコマ。"""
+    if SEASON:
+        n_days = min(len(settings.days), n_days * 2)
+        komas_from = komas_from * 2 - 1
     days = random.sample(settings.days, n_days)
     return {f"{d}{k.no}" for d in days for k in settings.komas if k.no >= komas_from}
 
@@ -45,7 +56,7 @@ for i, (tid, subs, grp, ind) in enumerate(teachers):
     nm = LAST[(i + 5) % len(LAST)] + "先生"
     row = {"講師ID": tid, "氏名": nm}
     row.update({s: "○" if s in subs else "" for s in SUBJECTS})
-    row.update({"集団可": "○" if grp else "", "個別可": "○" if ind else "", "週の上限コマ": random.choice([8, 10, 12])})
+    row.update({"集団可": "○" if grp else "", "個別可": "○" if ind else "", settings.limit_column: random.choice([20, 25, 30] if SEASON else [8, 10, 12])})
     t_rows.append(row)
     av = availability(random.choice([3, 4, 5]), 1)
     t_av_rows.append({"講師ID": tid, "氏名": nm, **{c: "○" if c in av else "" for c in slot_labels}})
@@ -62,13 +73,14 @@ for i in range(30):
         if form == "個別" and random.random() < 0.3:
             pref = random.choice([t[0] for t in teachers if subj in t[1]])
         req_rows.append({"生徒ID": sid, "氏名": nm, "学年": grade, "科目": subj, "形式": form,
-                         "週の回数": random.choice([1, 1, 2]), "希望講師（任意）": pref})
+                         settings.count_column: random.choice([3, 4, 6] if SEASON else [1, 1, 2]),
+                         "希望講師（任意）": pref})
     av = availability(random.choice([2, 3, 4]), random.choice([1, 2]))
     s_av_rows.append({"生徒ID": sid, "氏名": nm, **{c: "○" if c in av else "" for c in slot_labels}})
 
 koma_rows = [{"コマ": k.no, "開始": k.start, "終了": k.end} for k in settings.komas]
 
-out = Path(sys.argv[1] if len(sys.argv) > 1 else "sample/サンプル入力.xlsx")
+out = Path(args[0] if args else "sample/サンプル入力_講習期.xlsx" if SEASON else "sample/サンプル入力.xlsx")
 out.parent.mkdir(parents=True, exist_ok=True)
 with pd.ExcelWriter(out, engine="openpyxl") as xw:
     pd.DataFrame(koma_rows).to_excel(xw, sheet_name="コマ設定", index=False)

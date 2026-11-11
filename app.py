@@ -11,10 +11,10 @@ import streamlit as st
 
 from timetable import google_sheets as gs
 from timetable.loader import LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_xlsx
-from timetable.model import Koma
+from timetable.model import MODE_SEASON, MODE_WEEKLY, MODES, WEEKDAYS, Koma, date_label
 from timetable.output import (View, all_sheets, lessons_table, person_grid, student_name, subject_colors,
                               teacher_columns_grid, to_xlsx, unassigned_table)
-from timetable.settings_io import ALL_DAYS, check_komas, describe_komas, make_komas, save_settings
+from timetable.settings_io import ALL_DAYS, check_komas, check_season, describe_komas, make_komas, save_settings
 from timetable.previous import kept, read_previous
 from timetable.solver import diagnose, solve
 from timetable.template import make_template
@@ -158,7 +158,9 @@ try:
             if cached and cached[0] == sheet_url:
                 dfs = cached[1]
     else:
-        sample = ROOT / "sample" / "サンプル入力.xlsx"
+        # サンプルは時間割の種類に合わせる（講習期は日付ごとの空き時間）
+        mode = st.session_state.get("mode", settings.mode)
+        sample = ROOT / "sample" / ("サンプル入力_講習期.xlsx" if mode == MODE_SEASON else "サンプル入力.xlsx")
         dfs = read_xlsx(sample)
         st.download_button("サンプル入力をダウンロード", sample.read_bytes(), sample.name)
 except Exception as e:  # noqa: BLE001
@@ -168,16 +170,41 @@ except Exception as e:  # noqa: BLE001
 # 雛形は左の条件（曜日・コマ割）が決まってから作るので、場所だけ先に取っておく
 template_area = st.container()
 
+MODE_HELP = {MODE_WEEKLY: "毎週同じ曜日・コマの時間割", MODE_SEASON: "冬期・夏期・春期講習など、日付ごとの時間割"}
+
+with st.sidebar:
+    st.header("条件")
+    settings.mode = st.radio("時間割の種類", MODES, index=MODES.index(settings.mode), horizontal=True,
+                             captions=[MODE_HELP[m] for m in MODES], key="mode")
+    season_errors: list[str] = []
+    if settings.is_season:
+        st.subheader("講習の期間")
+        season = settings.season
+        season.name = st.text_input("講習の名前", season.name)
+        season.start = st.date_input("初日", season.start, format="YYYY/MM/DD")
+        season.end = st.date_input("最終日", season.end, format="YYYY/MM/DD")
+        season.closed_weekdays = st.multiselect("休みの曜日", WEEKDAYS,
+                                                default=[d for d in WEEKDAYS if d in season.closed_weekdays])
+        open_by_weekday = [d for d in season.all_dates() if WEEKDAYS[d.weekday()] not in season.closed_weekdays]
+        season.closed_dates = st.multiselect("休みの日（年末年始・お盆など）", open_by_weekday,
+                                             default=[d for d in season.closed_dates if d in open_by_weekday],
+                                             format_func=date_label)
+        season_errors = check_season(season)
+        for err in season_errors:
+            st.error(err)
+        if not season_errors:
+            st.caption(f"授業をする日：{len(season.dates())}日（{'・'.join(season.days)}）")
+    else:
+        st.subheader("曜日")
+        settings.days = st.multiselect("開講曜日", ALL_DAYS, default=[d for d in ALL_DAYS if d in settings.days]) or settings.days
+
 # 入力に「コマ設定」シートがあれば、そのコマ割を入力欄の初期値にする
 sheet_komas = komas_from_sheet(dfs) if dfs is not None else None
 base_komas = sheet_komas or settings.komas
 k_count, k_start, k_len, k_break = describe_komas(base_komas)
 
 with st.sidebar:
-    st.header("条件")
-
-    st.subheader("曜日とコマ割")
-    settings.days = st.multiselect("開講曜日", ALL_DAYS, default=[d for d in ALL_DAYS if d in settings.days]) or settings.days
+    st.subheader("コマ割" + (f"（{settings.season.name}）" if settings.is_season else ""))
     c1, c2 = st.columns(2)
     count = c1.number_input("1日のコマ数", 1, 12, k_count)
     start = c2.text_input("1限の開始", k_start)
@@ -193,11 +220,14 @@ with st.sidebar:
     initial = base_komas if (count, start, length, brk) == (k_count, k_start, k_len, k_break) else generated
     edited = st.data_editor(
         pd.DataFrame([{"コマ": k.no, "開始": k.start, "終了": k.end} for k in initial]),
-        hide_index=True, disabled=["コマ"], width="stretch", key=f"komas_{count}_{start}_{length}_{brk}",
+        hide_index=True, disabled=["コマ"], width="stretch",
+        key=f"komas_{settings.mode}_{count}_{start}_{length}_{brk}",
     )
     settings.komas = [Koma(int(r["コマ"]), str(r["開始"]), str(r["終了"])) for _, r in edited.iterrows()]
-    st.caption("時刻はコマごとに表で直せます。生徒・講師の空き時間シートの列（月1, 月2 …）はこのコマ割に合わせてください。")
-    koma_errors = check_komas(settings.komas)
+    first_day = settings.days[0] if settings.days else "月"
+    st.caption(f"時刻はコマごとに表で直せます。生徒・講師の空き時間シートの列（{first_day}1, {first_day}2 …）は"
+               "このコマ割に合わせてください。")
+    koma_errors = check_komas(settings.komas) + season_errors
     for err in koma_errors:
         st.error(err)
 
@@ -218,23 +248,26 @@ with st.sidebar:
             w[key] = st.number_input(label, 0, 1000, w.get(key, 0), key=f"w_{key}")
     settings.time_limit_seconds = st.number_input("計算時間の上限（秒）", 5, 600, int(settings.time_limit_seconds))
 
-    if st.button("この条件を既定にする", disabled=bool(koma_errors)):
+    if st.button("この条件を既定にする", disabled=bool(koma_errors),
+                 help="通常期と講習期の条件を両方とも保存し、今の時間割の種類も次回の初期値にします。"):
         save_settings(settings, LOCAL_CONFIG)
         st.success("保存しました。次回からこの条件が最初から入ります。")
 
 problem, notes = parse(dfs, settings, use_koma_sheet=False) if dfs is not None and not koma_errors else (None, [])
 if not koma_errors:
     with template_area.expander("入力用の雛形をダウンロード"):
-        st.caption("左の曜日・コマ割に合わせた空き時間表など、入力の5シートです。○は選択肢から選べます。")
+        st.caption(("左の講習の期間（日付）" if settings.is_season else "左の曜日")
+                   + "・コマ割に合わせた空き時間表など、入力の5シートです。○は選択肢から選べます。")
         keep_people = problem is not None and st.checkbox("読み込んだ生徒・講師のIDと氏名を入れておく", True)
         st.download_button("雛形をダウンロード", make_template(settings, problem if keep_people else None),
-                           "入力の雛形.xlsx")
+                           f"{settings.season.name}_入力の雛形.xlsx" if settings.is_season else "入力の雛形.xlsx")
 
 if dfs is None or koma_errors:
     st.stop()
 
 if notes:
-    with st.expander(f"入力の確認（{len(notes)}件）", expanded=problem is None):
+    mode_mismatch = any("時間割の種類" in n for n in notes)
+    with st.expander(f"入力の確認（{len(notes)}件）", expanded=problem is None or mode_mismatch):
         for n in notes:
             st.warning(n)
 if problem is None:
@@ -243,7 +276,7 @@ if problem is None:
 c1, c2, c3 = st.columns(3)
 c1.metric("生徒", f"{len(problem.students)}人")
 c2.metric("講師", f"{len(problem.teachers)}人")
-c3.metric("希望コマ数（週）", sum(r.times for r in problem.requests))
+c3.metric(f"希望コマ数（{problem.settings.period}）", sum(r.times for r in problem.requests))
 
 previous = None
 with st.expander("今の時間割をなるべく変えずに作り直す"):
@@ -264,6 +297,10 @@ if st.button("時間割を作る", type="primary"):
         st.session_state["previous_used"] = previous
         st.session_state.pop("diagnosis", None)
 
+# 時間割の種類を切り替えたら、前の種類で作った結果は出さない
+if "result" in st.session_state and st.session_state["result"][0].settings.mode != settings.mode:
+    for k in ("result", "diagnosis", "previous_used"):
+        st.session_state.pop(k, None)
 if "result" not in st.session_state:
     st.stop()
 
@@ -289,7 +326,7 @@ with tabs[0]:
     st.markdown(overview_html(problem, result, view), unsafe_allow_html=True)
 with tabs[1]:
     st.dataframe(teacher_columns_grid(problem, result, view), width="stretch")
-    st.caption("授業のない講師はその曜日に出しません。「予備」は手書き用の空き列です")
+    st.caption(f"授業のない講師はその{'日' if problem.settings.is_season else '曜日'}に出しません。「予備」は手書き用の空き列です")
 with tabs[2]:
     sid = st.selectbox("生徒", list(problem.students), format_func=lambda k: f"{k} {problem.students[k].name}（{problem.students[k].grade}）" if view.show_detail
                        else problem.students[k].name)
@@ -310,7 +347,9 @@ with tabs[5]:
     st.dataframe(lessons_table(problem, result, view), width="stretch", hide_index=True)
 
 st.subheader("書き出し")
-st.download_button("Excelでダウンロード", to_xlsx(problem, result, view), "時間割.xlsx", type="primary")
+st.download_button("Excelでダウンロード", to_xlsx(problem, result, view),
+                   f"{problem.settings.season.name}_時間割.xlsx" if problem.settings.is_season else "時間割.xlsx",
+                   type="primary")
 if source == SRC_GOOGLE and sheet_url and oauth and google_credentials(oauth):
     if st.button("元のGoogleスプレッドシートに書き込む"):
         try:
