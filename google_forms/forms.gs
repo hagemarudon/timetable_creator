@@ -430,6 +430,18 @@ function latestByName_(responses) {
  * 表（行=時間の枠, 列=曜日・日付）は、rows（フォームの行の見出し）があれば見出しの時刻で、無ければ行の順番で枠を決める。
  * 講習期を時間帯で聞くときは「12/24(木)13:00〜15:00」の集合にする（日ごとの選択肢の回答も読む）。
  */
+/**
+ * フォームの列の日（例：「12/20 日」「12/20(日)」）を、空き時間シートの列の日（days_ の「12/20(日)」）にそろえる。
+ * フォームの見出しを手で直していても、月/日が同じなら同じ日として読む。
+ */
+function dayOf_(text, cfg) {
+  var m = String(text).match(/(\d{1,2})\/(\d{1,2})/);
+  if (!m || !isSeason_(cfg)) return String(text).trim();
+  var key = Number(m[1]) + '/' + Number(m[2]);
+  var hit = days_(cfg).filter(function (d) { return d.replace(/\(.*$/, '') === key; })[0];
+  return hit || String(text).trim();
+}
+
 function availSet_(grid, cfg, rows) {
   var set = {};
   if (seasonRanges_(cfg)) {
@@ -440,13 +452,13 @@ function availSet_(grid, cfg, rows) {
         // 選択肢「12/24(木) 13:00〜15:00」
         var m = String(item).match(/^\s*(.*?)\s*(\d{1,2}[:：]\d{2}\s*[~〜～\-－–]\s*\d{1,2}[:：]\d{2})/);
         var r = m && parseRange_(m[2]);
-        if (r) set[m[1] + rangeLabel_(r)] = true;
+        if (r) set[dayOf_(m[1], cfg) + rangeLabel_(r)] = true;
         return;
       }
       // 表（行=時間帯, 列=日付）
       var range = parseRange_(rows && rows[i] != null ? rows[i] : defaults[i]);
       if (!range) return;
-      (Array.isArray(item) ? item : [item]).forEach(function (d) { if (d) set[d + rangeLabel_(range)] = true; });
+      (Array.isArray(item) ? item : [item]).forEach(function (d) { if (d) set[dayOf_(d, cfg) + rangeLabel_(range)] = true; });
     });
     return set;
   }
@@ -454,7 +466,7 @@ function availSet_(grid, cfg, rows) {
   (grid || []).forEach(function (cols, i) {
     var t = rows && rows[i] != null ? toMin_(rows[i]) : starts[i];
     if (t == null || !cols) return;
-    (Array.isArray(cols) ? cols : [cols]).forEach(function (d) { if (d) set[d + toHhmm_(t)] = true; });
+    (Array.isArray(cols) ? cols : [cols]).forEach(function (d) { if (d) set[dayOf_(d, cfg) + toHhmm_(t)] = true; });
   });
   return set;
 }
