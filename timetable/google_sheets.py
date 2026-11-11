@@ -42,14 +42,21 @@ def _sign(cfg: OAuthConfig, payload: str) -> str:
     return hmac.new(cfg.client_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
 
 
-def make_state(cfg: OAuthConfig, now: float | None = None) -> str:
+def make_state(cfg: OAuthConfig, now: float | None = None, extra: str = "") -> str:
     """偽のログイン戻りを弾くための state。
 
     Googleの画面から戻ると Streamlit のセッションが新しくなるので、
     セッションに保存せず、時刻と乱数に署名を付けて検証できるようにする。
+    extra（英数字）には戻ったあとに使う値（ホームで選んだ時間割の種類など）を入れておける。
     """
-    payload = f"{int(now if now is not None else time.time())}.{secrets.token_urlsafe(8)}"
+    payload = f"{int(now if now is not None else time.time())}.{secrets.token_urlsafe(8)}.{extra}"
     return f"{payload}.{_sign(cfg, payload)}"
+
+
+def state_extra(state: str) -> str:
+    """make_state の extra（check_state で確かめてから使う）。"""
+    parts = state.rpartition(".")[0].split(".")
+    return parts[2] if len(parts) >= 3 else ""
 
 
 def check_state(cfg: OAuthConfig, state: str, now: float | None = None) -> bool:

@@ -8,13 +8,15 @@ FORMS = ["集団", "個別"]
 WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 
 # 時間割の種類
-MODE_WEEKLY = "通常期"   # 毎週同じ曜日・コマの時間割（曜日ごと）
-MODE_SEASON = "講習期"   # 冬期・夏期・春期講習など、期間中の日付ごとの時間割
+MODE_WEEKLY = "通常授業"   # 毎週同じ曜日・コマの時間割（曜日ごと）
+MODE_SEASON = "講習"       # 冬期・夏期・春期講習など、期間中の日付ごとの不規則な時間割
 MODES = [MODE_WEEKLY, MODE_SEASON]
+# 以前の呼び方（設定ファイルに残っていても読めるように）
+MODE_ALIASES = {"通常期": MODE_WEEKLY, "講習期": MODE_SEASON}
 
 
 def date_label(d: date) -> str:
-    """講習期の日の書き方（例：12/24(木)）。空き時間の列は「12/24(木)1」「12/24(木)16:00」になる。"""
+    """講習の日の書き方（例：12/24(木)）。空き時間の列は「12/24(木)1」「12/24(木)16:00」になる。"""
     return f"{d.month}/{d.day}({WEEKDAYS[d.weekday()]})"
 
 
@@ -74,7 +76,7 @@ class Request:
 
 @dataclass
 class Season:
-    """講習期の期間とコマ割。期間の日付から休みの曜日・休みの日を除いた日に授業を入れる。"""
+    """講習の期間とコマ割。期間の日付から休みの曜日・休みの日を除いた日に授業を入れる。"""
     name: str
     start: date
     end: date
@@ -103,7 +105,7 @@ class Settings:
     """時間割の条件。
 
     days と komas は、今の時間割の種類（mode）の開講日とコマ割を返す。
-    通常期は weekdays（曜日）と weekly_komas、講習期は season の日付とコマ割で、両方を別々に持つ。
+    通常授業は weekdays（曜日）と weekly_komas、講習は season の日付とコマ割で、両方を別々に持つ。
     """
     weekdays: list[str]
     weekly_komas: list[Koma]
@@ -128,7 +130,7 @@ class Settings:
     @days.setter
     def days(self, value: list[str]) -> None:
         if self.is_season:
-            raise ValueError("講習期の開講日は期間と休みの日（season）で決めます。")
+            raise ValueError("講習の開講日は期間と休みの日（season）で決めます。")
         self.weekdays = list(value)
 
     @property
@@ -144,12 +146,12 @@ class Settings:
 
     @property
     def count_column(self) -> str:
-        """「生徒_受講希望」の回数の列。通常期は1週間の回数、講習期は講習期間全体の回数。"""
+        """「生徒_受講希望」の回数の列。通常授業は1週間の回数、講習は講習期間全体の回数。"""
         return "回数" if self.is_season else "週の回数"
 
     @property
     def limit_column(self) -> str:
-        """「講師_担当可能科目」の上限コマの列。通常期は1週間、講習期は講習期間全体。"""
+        """「講師_担当可能科目」の上限コマの列。通常授業は1週間、講習は講習期間全体。"""
         return "上限コマ" if self.is_season else "週の上限コマ"
 
     @property

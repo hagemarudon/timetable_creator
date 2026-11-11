@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .model import FORMS, MODE_SEASON, MODE_WEEKLY, Koma, Problem, Request, Season, Settings, Slot, Student, Teacher
+from .model import FORMS, MODE_ALIASES, MODE_SEASON, MODE_WEEKLY, Koma, Problem, Request, Season, Settings, Slot, Student, Teacher
 
 SHEET_KOMA = "コマ設定"
 SHEET_STUDENT_REQ = "生徒_受講希望"
@@ -17,13 +17,54 @@ SHEET_STUDENT_AVAIL = "生徒_空き時間"
 SHEET_TEACHER = "講師_担当可能科目"
 SHEET_TEACHER_AVAIL = "講師_空き時間"
 REQUIRED_SHEETS = [SHEET_STUDENT_REQ, SHEET_STUDENT_AVAIL, SHEET_TEACHER, SHEET_TEACHER_AVAIL]
+INPUT_SHEETS = [SHEET_KOMA, *REQUIRED_SHEETS]
+
+# 講習の入力シートは名前に「講習」を入れる（例：講習_生徒_受講希望）。
+# Googleフォームの回答をまとめると、題名に「講習」が入ったフォームの回答はこの名前のシートになる
+SEASON_WORD = "講習"
+SEASON_PREFIX = SEASON_WORD + "_"
+
+
+def season_sheet_name(name: str) -> str:
+    return SEASON_PREFIX + name
+
+
+def select_sheets(dfs: dict[str, pd.DataFrame], season: bool) -> dict[str, pd.DataFrame]:
+    """時間割の種類に合う入力シートだけを、もとのシート名（生徒_受講希望 など）で返す。
+
+    講習は名前に「講習」が入ったシート（講習_生徒_受講希望 など）、通常授業は入っていないシートを読む。
+    同じ種類で候補が2つ以上あるときは、名前がいちばん短いもの（余計な語のないもの）を使う。
+    """
+    out = {}
+    for base in INPUT_SHEETS:
+        names = [n for n in dfs if base in n and (SEASON_WORD in n) == season]
+        if names:
+            out[base] = dfs[min(names, key=len)]
+    return out
+
+
+def missing_sheets_message(dfs: dict[str, pd.DataFrame], season: bool) -> list[str]:
+    """足りない入力シートの知らせ。もう一方の種類のシートだけがあるときは、そう伝える。"""
+    have = select_sheets(dfs, season)
+    other = select_sheets(dfs, not season)
+    missing = [s for s in REQUIRED_SHEETS if s not in have]
+    if not missing:
+        return []
+    if all(s in other for s in missing):
+        if season:
+            return [f"講習用のシート（名前に「{SEASON_WORD}」が入ったもの。例：{season_sheet_name(SHEET_STUDENT_REQ)}）がありません。"
+                    "読み込んだのは通常授業のシートです。ホームで「通常授業」を選ぶか、講習のフォームの回答をまとめてください。"]
+        return [f"通常授業のシート（名前に「{SEASON_WORD}」が入っていないもの。例：{SHEET_STUDENT_REQ}）がありません。"
+                "読み込んだのは講習のシートです。ホームで「講習」を選んでください。"]
+    names = [season_sheet_name(s) if season else s for s in missing]
+    return [f"シート「{n}」がありません。" for n in names]
 
 MARKS = {"○", "◯", "〇", "o", "O", "1", "true", "TRUE", "True", "✓", "✔"}
 
 
 # 「講師_担当可能科目」シートで科目ではない列。これ以外の列見出しはすべて科目として扱う
 TEACHER_INFO_COLS = {"講師ID", "氏名", "集団可", "個別可", "週の上限コマ", "上限コマ", "備考", "メモ"}
-# 回数・上限コマの列は、通常期は「週の回数」「週の上限コマ」、講習期は「回数」「上限コマ」。どちらの名前でも読む
+# 回数・上限コマの列は、通常授業は「週の回数」「週の上限コマ」、講習は「回数」「上限コマ」。どちらの名前でも読む
 COUNT_COLUMNS = ["回数", "週の回数"]
 LIMIT_COLUMNS = ["上限コマ", "週の上限コマ"]
 
@@ -51,6 +92,7 @@ def load_settings(path: str | Path, overlay: str | Path | None = None) -> Settin
             c = _merge(c, tomllib.load(f))
     komas = _komas(c["komas"])
     mode = str(c.get("mode", MODE_WEEKLY))
+    mode = MODE_ALIASES.get(mode, mode)
     if mode not in (MODE_WEEKLY, MODE_SEASON):
         raise ValueError(f"設定の mode は「{MODE_WEEKLY}」か「{MODE_SEASON}」にしてください（今は「{mode}」）。")
     return Settings(
@@ -78,7 +120,7 @@ def _date(v) -> date:
 
 
 def _season(c: dict, weekly_komas: list[Koma]) -> Season:
-    """講習期の設定。無い項目は仮の値（今日から2週間・通常期と同じコマ割）にする。"""
+    """講習の設定。無い項目は仮の値（今日から2週間・通常授業と同じコマ割）にする。"""
     start = _date(c["start"]) if "start" in c else date.today()
     end = _date(c["end"]) if "end" in c else date.fromordinal(start.toordinal() + 13)
     return Season(
@@ -172,16 +214,16 @@ def _mode_hint(settings: Settings, date_style: bool) -> str:
     if settings.is_season and not date_style:
         return (f"空き時間の列が曜日（月1・月16:00など）になっています。{MODE_SEASON}の時間割は日付の列"
                 f"（{settings.days[0] if settings.days else '12/24(木)'}1 など）で読みます。"
-                f"毎週の時間割を作るときは、左の「時間割の種類」を「{MODE_WEEKLY}」にしてください。")
+                f"毎週の時間割を作るときは、ホームで「{MODE_WEEKLY}」を選んでください。")
     if not settings.is_season and date_style:
-        return (f"空き時間の列が日付（12/24(木)1 など）になっています。講習など日付ごとの時間割を作るときは、"
-                f"左の「時間割の種類」を「{MODE_SEASON}」にして、期間をこの日付に合わせてください。")
+        return (f"空き時間の列が日付（12/24(木)1 など）になっています。日付ごとの時間割を作るときは、"
+                f"ホームで「{MODE_SEASON}」を選び、期間をこの日付に合わせてください。")
     return ""
 
 
 def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet: str,
                        errors: list[str]) -> dict[str, set[Slot]] | None:
-    """空き時間を読む。列は「月1」（コマ）か「月16:00」（30分の枠）のどちらでもよい（講習期は「12/24(木)1」など）。
+    """空き時間を読む。列は「月1」（コマ）か「月16:00」（30分の枠）のどちらでもよい（講習は「12/24(木)1」など）。
 
     30分の枠で書いた場合は、そのコマの時間にかかる枠すべてに○があればコマが空いているとする。
     開講日の空き時間の列が1つも無いときは None を返す（時間割の種類と入力が合っていないときなど）。
@@ -249,7 +291,7 @@ def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet:
 
 def _read_fixed(text: str, req: Request, student: Student, teachers: dict[str, Teacher],
                 settings: Settings, where: str, errors: list[str]) -> list[Slot]:
-    """「固定」列（例：「月1」「月1、木2」、講習期は「12/24(木)1、12/25(金)2」）を読む。
+    """「固定」列（例：「月1」「月1、木2」、講習は「12/24(木)1、12/25(金)2」）を読む。
 
     入れられないコマは注意を出して外す。
     """
@@ -281,8 +323,9 @@ def _read_fixed(text: str, req: Request, student: Student, teachers: dict[str, T
     return fixed
 
 
-def komas_from_sheet(dfs: dict[str, pd.DataFrame]) -> list[Koma] | None:
-    """「コマ設定」シートがあれば、そのコマ割を返す。"""
+def komas_from_sheet(dfs: dict[str, pd.DataFrame], season: bool = False) -> list[Koma] | None:
+    """「コマ設定」シート（講習は「講習_コマ設定」）があれば、そのコマ割を返す。"""
+    dfs = select_sheets(dfs, season)
     if SHEET_KOMA not in dfs:
         return None
     df = _clean(dfs[SHEET_KOMA])
@@ -299,9 +342,9 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
     use_koma_sheet が True なら「コマ設定」シートのコマ割で settings を上書きする。
     """
     errors: list[str] = []
-    missing = [s for s in REQUIRED_SHEETS if s not in dfs]
-    if missing:
-        return None, [f"シート「{s}」がありません。" for s in missing]
+    if missing := missing_sheets_message(dfs, settings.is_season):
+        return None, missing
+    dfs = select_sheets(dfs, settings.is_season)
     if use_koma_sheet and (komas := komas_from_sheet(dfs)):
         settings.komas = komas
 
@@ -310,7 +353,7 @@ def parse(dfs: dict[str, pd.DataFrame], settings: Settings,
     t_df = _clean(dfs[SHEET_TEACHER])
     t_av_df = _clean(dfs[SHEET_TEACHER_AVAIL])
 
-    # 回数の列は「回数」か「週の回数」（講習期でも「週の回数」の列のまま読めるようにする）
+    # 回数の列は「回数」か「週の回数」（講習でも「週の回数」の列のまま読めるようにする）
     count_col = next((c for c in COUNT_COLUMNS if c in req_df.columns), settings.count_column)
     for sheet, df, cols in [
         (SHEET_STUDENT_REQ, req_df, ["生徒ID", "氏名", "学年", "科目", "形式", count_col]),
