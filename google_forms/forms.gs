@@ -47,6 +47,13 @@ var CONFIG = {
       { no: 6, start: '20:30', end: '22:00' },
     ],
     maxTimes: 10, // 生徒が1科目で選べる講習期間中の回数の上限
+    // 空き時間を聞く時間帯（例：'13:00~15:00'）。空 [] なら slotMinutes（30分）ごとに聞く。
+    //   全日同じ時間帯：['13:00~15:00', '15:00~17:00', '17:00~19:00', '19:00~22:00']
+    //     → 行が時間帯・列が日付の表で聞く
+    //   日によって変える：{ '12/24': ['13:00~15:00', '15:00~17:00'], '12/26': ['10:00~12:00'], '*': [ほかの日の時間帯] }
+    //     → 「12/24(木) 13:00〜15:00」のような選択肢から選ぶ
+    // アプリは、コマ（90分）の時間が○を付けた時間帯にすっかり入るとき、そのコマに授業を入れる
+    times: [],
   },
 };
 
@@ -120,6 +127,11 @@ function q_(cfg) {
   return out;
 }
 
+/** 空き時間の刻みの説明（時間帯で聞くときは付けない）。 */
+function unitNote_() {
+  return seasonRanges_(CONFIG) ? '' : '（' + CONFIG.slotMinutes + '分ごと）';
+}
+
 function formTitle_(kind) {
   return CONFIG.juku + (isSeason_(CONFIG) ? ' ' + CONFIG.season.name : '') + ' ' + kind;
 }
@@ -138,11 +150,9 @@ function makeStudentForm_() {
       + '受けない科目は「' + NONE + '」のままで構いません。')
     .setRows(CONFIG.subjects)
     .setColumns(lessonChoices_());
-  form.addCheckboxGridItem().setTitle(q.studentAvail)
-    .setHelpText('通塾できる' + (season ? '日と' : '') + '時間すべてに○を付けてください（' + CONFIG.slotMinutes + '分ごと）。授業は1回'
-      + lessonMinutes_() + '分なので、続けて○が付いている時間に入ります。多く付けるほど時間割が組みやすくなります。')
-    .setRows(cellLabels_())
-    .setColumns(days_());
+  addAvailItem_(form, q.studentAvail,
+    '通塾できる' + (season ? '日と' : '') + '時間すべてに○を付けてください' + unitNote_() + '。授業は1回'
+      + lessonMinutes_() + '分なので、続けて○が付いている時間に入ります。多く付けるほど時間割が組みやすくなります。');
   form.addParagraphTextItem().setTitle(q.note)
     .setHelpText('希望の先生、同じ日に固めたくない、などがあれば書いてください。');
   return form;
@@ -159,10 +169,8 @@ function makeTeacherForm_() {
   form.addTextItem().setTitle(q.teacherMax)
     .setHelpText('上限がなければ空のままで構いません。')
     .setValidation(FormApp.createTextValidation().requireWholeNumber().setHelpText('数字で入力してください').build());
-  form.addCheckboxGridItem().setTitle(q.teacherAvail)
-    .setHelpText('出勤できる' + (isSeason_(CONFIG) ? '日と' : '') + '時間すべてに○を付けてください（' + CONFIG.slotMinutes + '分ごと）。')
-    .setRows(cellLabels_())
-    .setColumns(days_());
+  addAvailItem_(form, q.teacherAvail,
+    '出勤できる' + (isSeason_(CONFIG) ? '日と' : '') + '時間すべてに○を付けてください' + unitNote_() + '。');
   return form;
 }
 
@@ -330,9 +338,71 @@ function cellLabels_(cfg) {
   return cellStarts_(cfg).map(function (t) { return toHhmm_(t) + '〜' + toHhmm_(t + cfg.slotMinutes); });
 }
 
-/** 空き時間シートの列（例：月16:00、講習期は 12/24(木)16:00）。 */
+/** 「13:00~15:00」を [780, 900]（分）にする。読めなければ null。 */
+function parseRange_(text) {
+  var m = String(text).match(/(\d{1,2})[:：](\d{2})\s*[~〜～\-－–]\s*(\d{1,2})[:：](\d{2})/);
+  return m ? [Number(m[1]) * 60 + Number(m[2]), Number(m[3]) * 60 + Number(m[4])] : null;
+}
+
+function rangeLabel_(r) {
+  return toHhmm_(r[0]) + '〜' + toHhmm_(r[1]);
+}
+
+/**
+ * 講習期に時間帯（season.times）で聞くときの、日ごとの時間帯 [{day: '12/24(木)', ranges: [[780, 900], …]}]。
+ * 時間帯を使わない（30分ごとに聞く）ときは null。
+ */
+function seasonRanges_(cfg) {
+  cfg = cfg || CONFIG;
+  var t = isSeason_(cfg) ? cfg.season.times : null;
+  if (!t || (Array.isArray(t) && !t.length)) return null;
+  return days_(cfg).map(function (d) {
+    var list = Array.isArray(t) ? t : (t[d.replace(/\(.*$/, '')] || t[d] || t['*'] || []);
+    return { day: d, ranges: list.map(parseRange_).filter(Boolean) };
+  });
+}
+
+/** 日によって時間帯が違う（選択肢から選ぶ形で聞く）か。 */
+function rangesPerDay_(cfg) {
+  cfg = cfg || CONFIG;
+  return !!seasonRanges_(cfg) && !Array.isArray(cfg.season.times);
+}
+
+/** 空き時間の行の見出し。時間帯で聞くとき（全日同じ）は「13:00〜15:00」、それ以外は30分の枠。 */
+function availRows_(cfg) {
+  cfg = cfg || CONFIG;
+  if (!seasonRanges_(cfg)) return cellLabels_(cfg);
+  return rangesPerDay_(cfg) ? [] : cfg.season.times.map(parseRange_).filter(Boolean).map(rangeLabel_);
+}
+
+/** 日によって時間帯が違うときの選択肢（例：12/24(木) 13:00〜15:00）。 */
+function availChoices_(cfg) {
+  var out = [];
+  seasonRanges_(cfg).forEach(function (x) {
+    x.ranges.forEach(function (r) { out.push(x.day + ' ' + rangeLabel_(r)); });
+  });
+  return out;
+}
+
+/** 空き時間の質問を作る（30分ごと・時間帯の表・日ごとの時間帯の選択肢）。 */
+function addAvailItem_(form, title, help) {
+  if (rangesPerDay_(CONFIG)) {
+    return form.addCheckboxItem().setTitle(title).setHelpText(help).setChoiceValues(availChoices_(CONFIG));
+  }
+  return form.addCheckboxGridItem().setTitle(title).setHelpText(help).setRows(availRows_()).setColumns(days_());
+}
+
+/**
+ * 空き時間シートの列（例：月16:00、講習期は 12/24(木)16:00）。
+ * 講習期を時間帯で聞くときは時間帯の列（例：12/24(木)13:00〜15:00）。アプリはどちらも読める。
+ */
 function slotLabels_(cfg) {
   var out = [];
+  var ranges = seasonRanges_(cfg);
+  if (ranges) {
+    ranges.forEach(function (x) { x.ranges.forEach(function (r) { out.push(x.day + rangeLabel_(r)); }); });
+    return out;
+  }
   days_(cfg).forEach(function (d) { cellStarts_(cfg).forEach(function (t) { out.push(d + toHhmm_(t)); }); });
   return out;
 }
@@ -356,12 +426,31 @@ function latestByName_(responses) {
 }
 
 /**
- * チェックボックスのグリッド（行=時間の枠, 列=曜日）の回答を「月16:00」の集合にする。
- * rows（フォームの行の見出し）があれば見出しの最初の時刻で、無ければ行の順番で枠を決める。
+ * 空き時間の回答を、空き時間シートの列名（「月16:00」、講習期は「12/24(木)16:00」）の集合にする。
+ * 表（行=時間の枠, 列=曜日・日付）は、rows（フォームの行の見出し）があれば見出しの時刻で、無ければ行の順番で枠を決める。
+ * 講習期を時間帯で聞くときは「12/24(木)13:00〜15:00」の集合にする（日ごとの選択肢の回答も読む）。
  */
 function availSet_(grid, cfg, rows) {
-  var starts = cellStarts_(cfg);
   var set = {};
+  if (seasonRanges_(cfg)) {
+    var defaults = availRows_(cfg);
+    (grid || []).forEach(function (item, i) {
+      if (!item) return;
+      if (rangesPerDay_(cfg)) {
+        // 選択肢「12/24(木) 13:00〜15:00」
+        var m = String(item).match(/^\s*(.*?)\s*(\d{1,2}[:：]\d{2}\s*[~〜～\-－–]\s*\d{1,2}[:：]\d{2})/);
+        var r = m && parseRange_(m[2]);
+        if (r) set[m[1] + rangeLabel_(r)] = true;
+        return;
+      }
+      // 表（行=時間帯, 列=日付）
+      var range = parseRange_(rows && rows[i] != null ? rows[i] : defaults[i]);
+      if (!range) return;
+      (Array.isArray(item) ? item : [item]).forEach(function (d) { if (d) set[d + rangeLabel_(range)] = true; });
+    });
+    return set;
+  }
+  var starts = cellStarts_(cfg);
   (grid || []).forEach(function (cols, i) {
     var t = rows && rows[i] != null ? toMin_(rows[i]) : starts[i];
     if (t == null || !cols) return;
@@ -475,7 +564,7 @@ function buildTeacherSheets(responses, cfg, previous) {
 if (typeof module !== 'undefined') {
   module.exports = {
     CONFIG: CONFIG, Q: Q, komaSheet: komaSheet, lessonChoices_: lessonChoices_, komaLabels_: komaLabels_,
-    cellLabels_: cellLabels_, days_: days_, q_: q_,
+    cellLabels_: cellLabels_, days_: days_, q_: q_, availRows_: availRows_, availChoices_: availChoices_,
     buildStudentSheets: buildStudentSheets, buildTeacherSheets: buildTeacherSheets,
   };
 }

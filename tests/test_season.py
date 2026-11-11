@@ -221,3 +221,63 @@ console.log(JSON.stringify({days, choices: g.lessonChoices_(cfg), koma: g.komaSh
     assert problem.students["S001"].available == set(s.slots)
     assert [(r.subject, r.form, r.times) for r in problem.requests] == [("英語", "個別", 6), ("数学", "集団", 4)]
     assert problem.teachers["T001"].max_komas == 30
+
+
+def test_availability_by_time_range():
+    """「12/24 13:00~15:00」のような時間帯の列。コマの時間が○の時間帯にすっかり入れば空き（2つの時間帯にまたがってもよい）。"""
+    s = season_settings()  # コマ 13:00-14:30, 14:30-16:00, 16:00-17:30
+    cols = ["生徒ID", "12/24(木)13:00〜15:00", "12/24 15:00~17:00", "12/25 13:00~15:00", "12/25 15:00~17:30",
+            "12/26  16:00-17:30"]
+    df = pd.DataFrame([["S1", "○", "○", "○", "", "○"], ["S2", "○", "", "", "○", ""]], columns=cols)
+    errors: list[str] = []
+    avail = _read_availability(df, "生徒ID", s, "生徒_空き時間", errors)
+    assert avail["S1"] == {Slot("12/24(木)", 1), Slot("12/24(木)", 2), Slot("12/25(金)", 1), Slot("12/26(土)", 3)}
+    assert avail["S2"] == {Slot("12/24(木)", 1), Slot("12/25(金)", 3)}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node がない")
+@pytest.mark.parametrize("times", [
+    ["13:00~15:00", "15:00~17:30"],                                                    # 全日同じ時間帯（表で聞く）
+    {"12/24": ["13:00~16:00"], "12/25": ["14:30~17:30"], "*": ["13:00~15:00", "15:00~17:30"]},  # 日ごと（選択肢）
+])
+def test_google_forms_season_time_ranges(times):
+    """講習期の空き時間を時間帯で聞いたフォームの回答を、アプリの講習期で読める。"""
+    script = r"""
+const g = require(process.argv[1]);
+const times = JSON.parse(process.argv[2]);
+const season = Object.assign({}, g.CONFIG.season, {times,
+  komas: [{no: 1, start: '13:00', end: '14:30'}, {no: 2, start: '14:30', end: '16:00'}, {no: 3, start: '16:00', end: '17:30'}]});
+const cfg = Object.assign({}, g.CONFIG, {kind: '講習期', season});
+const Q = g.q_(cfg), days = g.days_(cfg);
+// 全日同じ：表の最初の行（13:00〜15:00）を 12/24 と 12/25 だけ。日ごと：選択肢の最初の2つ
+const ans = Array.isArray(times) ? [[days[0], days[1]], null] : g.availChoices_(cfg).slice(0, 2);
+const s = {time: 1, answers: {[Q.name]: '佐藤', [Q.grade]: '中3', [Q.lessons]: ['個別 2回'], [Q.studentAvail]: ans,
+           [Q.studentAvail + '#rows']: Array.isArray(times) ? g.availRows_(cfg) : undefined}};
+const all = Array.isArray(times) ? g.availRows_(cfg).map(() => days) : g.availChoices_(cfg);
+const t = {time: 1, answers: {[Q.name]: '鈴木', [Q.teacherSubjects]: ['英語'], [Q.teacherForms]: ['個別'],
+           [Q.teacherMax]: '', [Q.teacherAvail]: all}};
+console.log(JSON.stringify({koma: g.komaSheet(cfg), choices: Array.isArray(times) ? null : g.availChoices_(cfg),
+  s: g.buildStudentSheets([s], cfg, []), t: g.buildTeacherSheets([t], cfg, [])}));
+"""
+    res = subprocess.run(["node", "-e", script, str(ROOT / "google_forms" / "forms.gs"), json.dumps(times)],
+                         capture_output=True, text=True, check=True)
+    out = json.loads(res.stdout)
+    s = load_settings(ROOT / "config.toml")
+    s.mode = MODE_SEASON
+    header = out["s"]["avail"][0]
+    assert "12/24(木)13:00〜15:00" in header or "12/24(木)13:00〜16:00" in header
+    sheets = {"コマ設定": out["koma"], "生徒_受講希望": out["s"]["requests"], "生徒_空き時間": out["s"]["avail"],
+              "講師_担当可能科目": out["t"]["teachers"], "講師_空き時間": out["t"]["avail"]}
+    dfs = {k: gs.values_to_frame([[str(c) for c in r] for r in v]) for k, v in sheets.items()}
+    problem, errors = parse(dfs, s)
+    assert problem is not None, errors
+    if isinstance(times, list):
+        # 13:00〜15:00 だけでは 1限（13:00-14:30）しか入らない
+        assert problem.students["S001"].available == {Slot("12/24(木)", 1), Slot("12/25(金)", 1)}
+        assert len(problem.teachers["T001"].available) == 3 * len(s.days)
+    else:
+        assert out["choices"][:2] == ["12/24(木) 13:00〜16:00", "12/25(金) 14:30〜17:30"]
+        assert problem.students["S001"].available == {Slot("12/24(木)", 1), Slot("12/24(木)", 2),
+                                                      Slot("12/25(金)", 2), Slot("12/25(金)", 3)}
+    result = solve(problem, time_limit=5)
+    assert not result.unassigned
