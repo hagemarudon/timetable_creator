@@ -124,11 +124,13 @@ def subjects_from_sheet(df: pd.DataFrame) -> list[str]:
 # 空き時間の列の見出し。日は曜日（月）か日付（12/24、12/24(木)）、そのあとにコマ番号か30分の枠の開始時刻
 #   コマ：「月1」「12/24(木)1」（「12/24 1」「12/24-1限」も可）
 #   30分の枠：「月16:00」「12/24(木)16:00」（16:00〜16:30）。Googleフォームの空き時間はこの形でまとめる
+#   時間帯：「12/20 13:00~15:00」「月16:00〜19:00」（その時間帯に入る30分の枠すべて）
 CELL_MINUTES = 30
 _DAY = r"(?P<day>(?P<wd>[月火水木金土日])|(?P<mon>\d{1,2})/(?P<dom>\d{1,2})(?:[(（][月火水木金土日][)）])?)"
-_SEP = r"[\s_\-－]?"
+_SEP = r"(?:\s+|[_\-－])?"
 KOMA_COL = re.compile(_DAY + _SEP + r"(?P<koma>\d{1,2})限?")
-CELL_COL = re.compile(_DAY + _SEP + r"(?P<h>\d{1,2})[:：](?P<m>\d{2})")
+CELL_COL = re.compile(_DAY + _SEP + r"(?P<h>\d{1,2})[:：](?P<m>\d{2})"
+                      r"(?:\s*[~〜～\-－–]\s*(?P<h2>\d{1,2})[:：](?P<m2>\d{2}))?")
 
 
 def _minutes(hhmm: str) -> int:
@@ -187,7 +189,7 @@ def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet:
     lookup = _day_lookup(settings)
     koma_nos = {k.no for k in settings.komas}
     slot_cols: dict[str, Slot] = {}
-    cell_cols: dict[tuple[str, int], str] = {}
+    cell_cols: dict[str, set[tuple[str, int]]] = {}   # 列 → その列の○で空きになる（日, 30分の枠の開始）
     other_days: dict[str, bool] = {}   # 開講日に無い日（見出しのまま）→ 日付の書き方か
     unknown_komas: list[str] = []
     for c in df.columns:
@@ -203,7 +205,14 @@ def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet:
             else:
                 unknown_komas.append(c)
         else:
-            cell_cols[day, int(m["h"]) * 60 + int(m["m"])] = c
+            start = int(m["h"]) * 60 + int(m["m"])
+            if m["h2"]:  # 時間帯の列は、その時間帯にすっかり入る30分の枠すべて
+                end = int(m["h2"]) * 60 + int(m["m2"])
+                first = -(-start // CELL_MINUTES) * CELL_MINUTES
+                cells = range(first, end - CELL_MINUTES + 1, CELL_MINUTES)
+            else:
+                cells = [start // CELL_MINUTES * CELL_MINUTES]
+            cell_cols[c] = {(day, t) for t in cells}
     if not slot_cols and not cell_cols:
         hint = _mode_hint(settings, any(other_days.values())) if other_days else ""
         errors.append(f"「{sheet}」：" + hint if hint else
@@ -216,25 +225,25 @@ def _read_availability(df: pd.DataFrame, id_col: str, settings: Settings, sheet:
     if unknown_komas:
         errors.append(f"「{sheet}」の列 {', '.join(unknown_komas)} は設定のコマ割にありません（無視します）。")
     komas = {k.no: k for k in settings.komas}
-    # 30分の枠で決めるコマ（コマの時間にかかる枠の列がすべてあるもの）
-    by_cells = {sl: [cell_cols[sl.day, t] for t in _cells(komas[sl.koma].start, komas[sl.koma].end)]
-                for sl in settings.slots
-                if cell_cols and all((sl.day, t) in cell_cols
-                                     for t in _cells(komas[sl.koma].start, komas[sl.koma].end))}
+    # 30分の枠・時間帯の列で決めるコマ（コマの時間にかかる枠が、どれかの列でぜんぶ聞かれているもの）
+    asked = set().union(*cell_cols.values()) if cell_cols else set()
+    need = {sl: {(sl.day, t) for t in _cells(komas[sl.koma].start, komas[sl.koma].end)} for sl in settings.slots}
+    by_cells = [sl for sl in settings.slots if need[sl] <= asked]
     if cell_cols:
-        days = {d for d, _ in cell_cols}
+        days = {d for d, _ in asked}
         lack = [sl.label for sl in settings.slots
                 if sl.day in days and sl not in by_cells and sl not in slot_cols.values()]
         if lack:
-            errors.append(f"「{sheet}」の30分の枠の列が、コマ {'・'.join(lack)} の時間をすべては含んでいません"
+            errors.append(f"「{sheet}」の30分の枠・時間帯の列が、コマ {'・'.join(lack)} の時間をすべては含んでいません"
                           "（そのコマは空いていないものとします）。")
     out: dict[str, set[Slot]] = {}
     for _, row in df.iterrows():
         pid = row.get(id_col, "")
         if not pid:
             continue
+        free = set().union(*(cells for c, cells in cell_cols.items() if _marked(row[c]))) if cell_cols else set()
         out[pid] = ({sl for c, sl in slot_cols.items() if _marked(row[c])}
-                    | {sl for sl, cols in by_cells.items() if all(_marked(row[c]) for c in cols)})
+                    | {sl for sl in by_cells if need[sl] <= free})
     return out
 
 
