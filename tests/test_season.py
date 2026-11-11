@@ -281,3 +281,36 @@ console.log(JSON.stringify({koma: g.komaSheet(cfg), choices: Array.isArray(times
                                                       Slot("12/25(金)", 2), Slot("12/25(金)", 3)}
     result = solve(problem, time_limit=5)
     assert not result.unassigned
+
+
+def test_date_columns_with_plain_weekday():
+    """Googleフォームの列を「12/20 日」のように書いた場合（括弧なしの曜日）も読める。"""
+    s = season_settings(start=date(2026, 12, 20), closed_weekdays=[])
+    cols = ["生徒ID", "12/20 日9:00", "12/20 日09:30", "12/20 日10:00", "12/21月 1"]
+    df = pd.DataFrame([["S1", "○", "○", "○", "○"]], columns=cols)
+    s.season.komas = [Koma(1, "09:00", "10:30")]
+    errors: list[str] = []
+    avail = _read_availability(df, "生徒ID", s, "生徒_空き時間", errors)
+    assert avail["S1"] == {Slot("12/20(日)", 1), Slot("12/21(月)", 1)}, errors
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node がない")
+def test_google_forms_columns_written_by_hand():
+    """フォームの列見出しを「12/20 日」のように手で直しても、設定の日（12/20(日)）として読む。"""
+    script = r"""
+const g = require(process.argv[1]);
+const season = Object.assign({}, g.CONFIG.season, {start: '2026-12-20', end: '2026-12-26', closedWeekdays: [], closedDates: [],
+  komas: [{no: 1, start: '09:00', end: '10:30'}]});
+const cfg = Object.assign({}, g.CONFIG, {kind: '講習期', season});
+const Q = g.q_(cfg);
+const rows = ['09:00', '09:30', '10:00'];
+const s = {time: 1, answers: {[Q.name]: '佐藤', [Q.grade]: '中3', [Q.lessons]: ['個別 2回'],
+           [Q.studentAvail]: [['12/20 日', '12/26 土'], ['12/20 日', '12/26 土'], ['12/20 日']], [Q.studentAvail + '#rows']: rows}};
+console.log(JSON.stringify(g.buildStudentSheets([s], cfg, [])));
+"""
+    res = subprocess.run(["node", "-e", script, str(ROOT / "google_forms" / "forms.gs")],
+                         capture_output=True, text=True, check=True)
+    out = json.loads(res.stdout)
+    row = dict(zip(out["avail"][0], out["avail"][1]))
+    assert {k for k, v in row.items() if v == "○"} == {"12/20(日)9:00", "12/20(日)9:30", "12/20(日)10:00",
+                                                       "12/26(土)9:00", "12/26(土)9:30"}
