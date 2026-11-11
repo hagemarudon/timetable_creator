@@ -93,13 +93,14 @@ def test_availability_by_date():
 
 
 def test_mode_mismatch_is_reported():
-    """通常期の入力を講習期で読んだら（その逆も）、時間割の種類を切り替えるよう伝えて止める。"""
+    """講習のシートに曜日の列を書いた（その逆も）ときは、時間割の種類が合っていないと伝えて止める。"""
     sample = read_xlsx(ROOT / "sample" / "サンプル入力.xlsx")
-    problem, errors = parse(sample, season_settings())
-    assert problem is None and any("時間割の種類" in e and "通常期" in e for e in errors)
+    problem, errors = parse({"講習_" + k: v for k, v in sample.items()}, season_settings())
+    assert problem is None and any("曜日" in e and "通常授業" in e for e in errors)
     season_sample = read_xlsx(ROOT / "sample" / "サンプル入力_講習期.xlsx")
-    problem, errors = parse(season_sample, load_settings(ROOT / "config.toml"))
-    assert problem is None and any("時間割の種類" in e and "講習期" in e for e in errors)
+    problem, errors = parse({k.removeprefix("講習_"): v for k, v in season_sample.items()},
+                            load_settings(ROOT / "config.toml"))
+    assert problem is None and any("日付" in e and "講習" in e for e in errors)
 
 
 def _season_problem():
@@ -119,7 +120,7 @@ def _season_problem():
     t_av = [{"講師ID": "T1", "氏名": "鈴木", **every}, {"講師ID": "T2", "氏名": "高橋", **every}]
     dfs = {"生徒_受講希望": pd.DataFrame(reqs), "生徒_空き時間": pd.DataFrame(st_av),
            "講師_担当可能科目": pd.DataFrame(teachers), "講師_空き時間": pd.DataFrame(t_av)}
-    dfs = {k: v.fillna("").astype(str) for k, v in dfs.items()}
+    dfs = {"講習_" + k: v.fillna("").astype(str) for k, v in dfs.items()}  # 講習のシートは名前に「講習」
     return parse(dfs, s)
 
 
@@ -166,14 +167,14 @@ def test_season_schedule_sheets_per_week(solved):
 def test_season_template_round_trip():
     s = season_settings()
     wb = openpyxl.load_workbook(io.BytesIO(make_template(s)))
-    header = [c.value for c in wb["生徒_空き時間"][1]]
+    header = [c.value for c in wb["講習_生徒_空き時間"][1]]
     assert header[2:4] == ["12/24(木)1", "12/24(木)2"] and len(header) == 2 + len(s.slots)
-    assert "回数" in [c.value for c in wb["生徒_受講希望"][1]]
-    assert [c.value for c in wb["講師_担当可能科目"][1]][-1] == "上限コマ"
-    wb["生徒_受講希望"].append(["S1", "山田", "高1", "数学", "個別", 5, "", "12/25(金)1"])
-    wb["生徒_空き時間"].append(["S1", "山田", "○", "", "", "○"])
-    wb["講師_担当可能科目"].append(["T1", "佐藤", "", "○", "", "", "", "", "○", 20])
-    wb["講師_空き時間"].append(["T1", "佐藤", "○", "", "", "○"])
+    assert "回数" in [c.value for c in wb["講習_生徒_受講希望"][1]]
+    assert [c.value for c in wb["講習_講師_担当可能科目"][1]][-1] == "上限コマ"
+    wb["講習_生徒_受講希望"].append(["S1", "山田", "高1", "数学", "個別", 5, "", "12/25(金)1"])
+    wb["講習_生徒_空き時間"].append(["S1", "山田", "○", "", "", "○"])
+    wb["講習_講師_担当可能科目"].append(["T1", "佐藤", "", "○", "", "", "", "", "○", 20])
+    wb["講習_講師_空き時間"].append(["T1", "佐藤", "○", "", "", "○"])
     buf = io.BytesIO()
     wb.save(buf)
     problem, notes = parse(read_xlsx(buf.getvalue()), s)
@@ -215,7 +216,7 @@ console.log(JSON.stringify({days, choices: g.lessonChoices_(cfg), koma: g.komaSh
     assert out["s"]["requests"][0][5] == "回数" and out["t"]["teachers"][0][-1] == "上限コマ"
     sheets = {"コマ設定": out["koma"], "生徒_受講希望": out["s"]["requests"], "生徒_空き時間": out["s"]["avail"],
               "講師_担当可能科目": out["t"]["teachers"], "講師_空き時間": out["t"]["avail"]}
-    dfs = {k: gs.values_to_frame([[str(c) for c in r] for r in v]) for k, v in sheets.items()}
+    dfs = {"講習_" + k: gs.values_to_frame([[str(c) for c in r] for r in v]) for k, v in sheets.items()}
     problem, errors = parse(dfs, s)
     assert problem is not None, errors
     assert problem.students["S001"].available == set(s.slots)
@@ -268,7 +269,7 @@ console.log(JSON.stringify({koma: g.komaSheet(cfg), choices: Array.isArray(times
     assert "12/24(木)13:00〜15:00" in header or "12/24(木)13:00〜16:00" in header
     sheets = {"コマ設定": out["koma"], "生徒_受講希望": out["s"]["requests"], "生徒_空き時間": out["s"]["avail"],
               "講師_担当可能科目": out["t"]["teachers"], "講師_空き時間": out["t"]["avail"]}
-    dfs = {k: gs.values_to_frame([[str(c) for c in r] for r in v]) for k, v in sheets.items()}
+    dfs = {"講習_" + k: gs.values_to_frame([[str(c) for c in r] for r in v]) for k, v in sheets.items()}
     problem, errors = parse(dfs, s)
     assert problem is not None, errors
     if isinstance(times, list):
@@ -314,3 +315,51 @@ console.log(JSON.stringify(g.buildStudentSheets([s], cfg, [])));
     row = dict(zip(out["avail"][0], out["avail"][1]))
     assert {k for k, v in row.items() if v == "○"} == {"12/20(日)9:00", "12/20(日)9:30", "12/20(日)10:00",
                                                        "12/26(土)9:00", "12/26(土)9:30"}
+
+
+def test_sheets_are_chosen_by_season_word():
+    """講習は名前に「講習」が入ったシート、通常授業は入っていないシートを読む（1つのファイルに両方あってもよい）。"""
+    from timetable.loader import komas_from_sheet
+
+    weekly = read_xlsx(ROOT / "sample" / "サンプル入力.xlsx")
+    season = read_xlsx(ROOT / "sample" / "サンプル入力_講習期.xlsx")
+    assert all("講習" in n for n in season)
+    both = {**weekly, **season}
+    s = load_settings(ROOT / "config.toml")
+    p_weekly, _ = parse(both, s)
+    s2 = load_settings(ROOT / "config.toml")
+    s2.mode = MODE_SEASON
+    p_season, notes = parse(both, s2)
+    assert p_weekly is not None and p_season is not None, notes
+    assert p_weekly.students["S001"].available and all(sl.day in "月火水木金土" for sl in p_weekly.students["S001"].available)
+    assert all("/" in sl.day for sl in p_season.students["S001"].available)
+    assert komas_from_sheet(both, season=True)[0].start == "13:00"
+    assert komas_from_sheet(both)[0].start == "16:00"
+    # 講習を選んで通常授業のシートしかないときは、そう伝える
+    problem, errors = parse(weekly, s2)
+    assert problem is None and "講習用のシート" in errors[0]
+    problem, errors = parse(season, load_settings(ROOT / "config.toml"))
+    assert problem is None and "通常授業のシート" in errors[0]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node がない")
+def test_google_forms_hand_made_titles():
+    """質問の見出しを手で変えたフォーム（氏名→名前、空き時間の題名も違う）でも、最初の記述式と表から読む。"""
+    script = r"""
+const g = require(process.argv[1]);
+const cfg = g.cfgFor_(true);
+cfg.season = Object.assign({}, cfg.season, {start: '2026-12-20', end: '2026-12-21', closedWeekdays: [], closedDates: [],
+  komas: [{no: 1, start: '09:00', end: '10:30'}]});
+const s = {time: 1, answers: {'名前': '佐藤', '#name': '佐藤', [g.Q.grade]: '中3', [g.q_(cfg).lessons]: ['個別 2回'],
+  '冬期講習に来られる時間': [['12/20 日'], ['12/20 日'], ['12/20 日', '12/21 月']],
+  '#avail': [['12/20 日'], ['12/20 日'], ['12/20 日', '12/21 月']], '#avail#rows': ['09:00', '09:30', '10:00']}};
+console.log(JSON.stringify({title: g.isSeasonTitle_('〇〇塾 受講希望アンケート 冬期講習'), kind: cfg.kind,
+  s: g.buildStudentSheets([s], cfg, [])}));
+"""
+    res = subprocess.run(["node", "-e", script, str(ROOT / "google_forms" / "forms.gs")],
+                         capture_output=True, text=True, check=True)
+    out = json.loads(res.stdout)
+    assert out["title"] and out["kind"] == "講習"
+    row = dict(zip(out["s"]["avail"][0], out["s"]["avail"][1]))
+    assert row["氏名"] == "佐藤"
+    assert {k for k, v in row.items() if v == "○"} == {"12/20(日)9:00", "12/20(日)9:30", "12/20(日)10:00", "12/21(月)10:00"}

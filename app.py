@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from timetable import google_sheets as gs
-from timetable.loader import LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_xlsx
+from timetable.loader import SEASON_PREFIX, LOCAL_CONFIG_NAME, komas_from_sheet, load_settings, parse, read_xlsx
 from timetable.model import MODE_SEASON, MODE_WEEKLY, MODES, WEEKDAYS, Koma, date_label
 from timetable.output import (View, all_sheets, lessons_table, person_grid, student_name, subject_colors,
                               teacher_columns_grid, to_xlsx, unassigned_table)
@@ -89,7 +89,6 @@ def diagnosis_section(problem, result, view: View) -> None:
 
 
 st.set_page_config(page_title="塾の時間割作成", layout="wide")
-st.title("塾の時間割作成")
 
 CONFIG = ROOT / "config.toml"
 # 画面で保存した条件は Git で管理しない別ファイルに置く（自動pullとぶつからないように）
@@ -105,9 +104,14 @@ def google_oauth_config() -> gs.OAuthConfig | None:
         return None
 
 
+# Googleのログインから戻るとセッションが新しくなるので、ホームで選んだ種類を state に入れて持ち帰る
+MODE_CODES = {MODE_WEEKLY: "w", MODE_SEASON: "s"}
+
+
 def google_login_link(cfg: gs.OAuthConfig) -> None:
     # 新しいタブで開くとログインが別の画面に付くので、同じタブで Google のログイン画面へ移る
-    url = html.escape(gs.login_url(cfg, gs.make_state(cfg)))
+    state = gs.make_state(cfg, extra=MODE_CODES.get(st.session_state.get("mode"), ""))
+    url = html.escape(gs.login_url(cfg, state))
     st.markdown(f'<a href="{url}" target="_self" style="display:inline-block;padding:6px 14px;border-radius:6px;'
                 f'border:1px solid #aaa;text-decoration:none">Googleでログイン</a>', unsafe_allow_html=True)
 
@@ -121,6 +125,8 @@ oauth = google_oauth_config()
 # Googleのログイン画面から戻ってきたとき（URLに code と state が付く）
 if oauth and "code" in st.query_params:
     if gs.check_state(oauth, st.query_params.get("state", "")):
+        code = gs.state_extra(st.query_params.get("state", ""))
+        st.session_state["mode"] = next((m for m, c in MODE_CODES.items() if c == code), None)
         try:
             st.session_state["google_token"] = gs.exchange_code(oauth, st.query_params["code"])
             st.session_state["source"] = SRC_GOOGLE
@@ -129,6 +135,40 @@ if oauth and "code" in st.query_params:
     else:
         st.error("ログインの有効期限が切れました。もう一度「Googleでログイン」を押してください。")
     st.query_params.clear()
+
+def go_home() -> None:
+    for k in ("mode", "result", "diagnosis", "previous_used"):
+        st.session_state.pop(k, None)
+
+
+def home() -> None:
+    """アプリを開いたときの画面。通常授業（毎週の時間割）か講習（日付ごとの時間割）かを選ぶ。"""
+    st.title("塾の時間割作成")
+    st.subheader("どちらの時間割を作りますか？")
+    choices = [
+        (MODE_WEEKLY, "毎週同じ曜日・時間の時間割",
+         "読み込むもの：名前に「講習」が入っていないフォームの回答・シート"),
+        (MODE_SEASON, f"{settings.season.name}など、日付ごとに違う時間割",
+         "読み込むもの：名前に「講習」が入ったフォームの回答・シート（講習_生徒_受講希望 など）"),
+    ]
+    for col, (mode, what, reads) in zip(st.columns(2), choices):
+        with col.container(border=True):
+            st.markdown(f"### {mode}")
+            st.write(what)
+            st.caption(reads)
+            if st.button(f"{mode}の時間割を作る", key=f"home_{mode}", type="primary", width="stretch"):
+                st.session_state["mode"] = mode
+                st.rerun()
+
+
+if st.session_state.get("mode") not in MODES:
+    home()
+    st.stop()
+settings.mode = st.session_state["mode"]
+
+c1, c2 = st.columns([5, 1], vertical_alignment="center")
+c1.title(f"{settings.season.name}の時間割" if settings.is_season else "通常授業の時間割")
+c2.button("ホームに戻る", on_click=go_home, width="stretch")
 
 source = st.radio("入力", [SRC_EXCEL, SRC_GOOGLE, SRC_SAMPLE], horizontal=True, key="source")
 dfs = None
@@ -158,9 +198,8 @@ try:
             if cached and cached[0] == sheet_url:
                 dfs = cached[1]
     else:
-        # サンプルは時間割の種類に合わせる（講習期は日付ごとの空き時間）
-        mode = st.session_state.get("mode", settings.mode)
-        sample = ROOT / "sample" / ("サンプル入力_講習期.xlsx" if mode == MODE_SEASON else "サンプル入力.xlsx")
+        # サンプルは時間割の種類に合わせる（講習は日付ごとの空き時間）
+        sample = ROOT / "sample" / ("サンプル入力_講習期.xlsx" if settings.is_season else "サンプル入力.xlsx")
         dfs = read_xlsx(sample)
         st.download_button("サンプル入力をダウンロード", sample.read_bytes(), sample.name)
 except Exception as e:  # noqa: BLE001
@@ -170,12 +209,8 @@ except Exception as e:  # noqa: BLE001
 # 雛形は左の条件（曜日・コマ割）が決まってから作るので、場所だけ先に取っておく
 template_area = st.container()
 
-MODE_HELP = {MODE_WEEKLY: "毎週同じ曜日・コマの時間割", MODE_SEASON: "冬期・夏期・春期講習など、日付ごとの時間割"}
-
 with st.sidebar:
     st.header("条件")
-    settings.mode = st.radio("時間割の種類", MODES, index=MODES.index(settings.mode), horizontal=True,
-                             captions=[MODE_HELP[m] for m in MODES], key="mode")
     season_errors: list[str] = []
     if settings.is_season:
         st.subheader("講習の期間")
@@ -199,7 +234,7 @@ with st.sidebar:
         settings.days = st.multiselect("開講曜日", ALL_DAYS, default=[d for d in ALL_DAYS if d in settings.days]) or settings.days
 
 # 入力に「コマ設定」シートがあれば、そのコマ割を入力欄の初期値にする
-sheet_komas = komas_from_sheet(dfs) if dfs is not None else None
+sheet_komas = komas_from_sheet(dfs, settings.is_season) if dfs is not None else None
 base_komas = sheet_komas or settings.komas
 k_count, k_start, k_len, k_break = describe_komas(base_komas)
 
@@ -249,7 +284,7 @@ with st.sidebar:
     settings.time_limit_seconds = st.number_input("計算時間の上限（秒）", 5, 600, int(settings.time_limit_seconds))
 
     if st.button("この条件を既定にする", disabled=bool(koma_errors),
-                 help="通常期と講習期の条件を両方とも保存し、今の時間割の種類も次回の初期値にします。"):
+                 help="通常授業と講習の条件を両方とも保存します。"):
         save_settings(settings, LOCAL_CONFIG)
         st.success("保存しました。次回からこの条件が最初から入ります。")
 
@@ -266,7 +301,7 @@ if dfs is None or koma_errors:
     st.stop()
 
 if notes:
-    mode_mismatch = any("時間割の種類" in n for n in notes)
+    mode_mismatch = any("ホームで" in n for n in notes)
     with st.expander(f"入力の確認（{len(notes)}件）", expanded=problem is None or mode_mismatch):
         for n in notes:
             st.warning(n)
@@ -353,7 +388,10 @@ st.download_button("Excelでダウンロード", to_xlsx(problem, result, view),
 if source == SRC_GOOGLE and sheet_url and oauth and google_credentials(oauth):
     if st.button("元のGoogleスプレッドシートに書き込む"):
         try:
-            gs.write_sheets(google_credentials(oauth), sheet_url, all_sheets(problem, result, view))
-            st.success("「時間割_全体」などのシートを書き込みました。")
+            # 講習の結果は「講習_時間割_全体」などにして、通常授業の結果を上書きしない
+            prefix = SEASON_PREFIX if problem.settings.is_season else ""
+            gs.write_sheets(google_credentials(oauth), sheet_url,
+                            {prefix + k: v for k, v in all_sheets(problem, result, view).items()})
+            st.success(f"「{prefix}時間割_全体」などのシートを書き込みました。")
         except Exception as e:  # noqa: BLE001
             st.error(f"書き込めませんでした：{e}")

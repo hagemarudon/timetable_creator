@@ -8,7 +8,7 @@ from pathlib import Path
 from .model import WEEKDAYS, Koma, Season, Settings
 
 ALL_DAYS = WEEKDAYS
-# 講習期の期間の長さの目安（これより長いと計算に時間がかかる）
+# 講習の期間の長さの目安（これより長いと計算に時間がかかる）
 SEASON_MAX_DAYS = 45
 
 
@@ -58,7 +58,7 @@ def check_komas(komas: list[Koma]) -> list[str]:
 
 
 def check_season(season: Season) -> list[str]:
-    """講習期の期間と休みを確かめる。"""
+    """講習の期間と休みを確かめる。"""
     if season.end < season.start:
         return ["講習の最終日が初日より前になっています。"]
     if not season.dates():
@@ -83,21 +83,21 @@ def _koma_lines(table: str, komas: list[Koma]) -> list[str]:
 def save_settings(settings: Settings, path: str | Path) -> None:
     """条件を config.toml と同じ形で保存する（config.local.toml に保存し、次回からの初期値になる）。
 
-    通常期と講習期の条件は両方とも保存し、今の時間割の種類（mode）も次回の初期値にする。
+    通常授業と講習の条件は両方とも保存し、今の時間割の種類（mode）も次回の初期値にする。
     """
     season = settings.season
     lines = [
         "# 塾の時間割作成の設定（画面の「この条件を既定にする」で保存）",
         "",
-        "# 時間割の種類（\"通常期\" = 毎週同じ曜日の時間割、\"講習期\" = 講習の日付ごとの時間割）",
+        "# 時間割の種類（\"通常授業\" = 毎週同じ曜日の時間割、\"講習\" = 講習の日付ごとの時間割）",
         f'mode = "{settings.mode}"',
         "",
-        "# 開講曜日（通常期）",
+        "# 開講曜日（通常授業）",
         f"days = [{_quoted(settings.weekdays)}]",
         "",
-        "# コマ割（通常期。番号, 開始, 終了）",
+        "# コマ割（通常授業。番号, 開始, 終了）",
         *_koma_lines("komas", settings.weekly_komas),
-        "# 講習期の期間とコマ割",
+        "# 講習の期間とコマ割",
         "[season]",
         f"name = {json.dumps(season.name, ensure_ascii=False)}",
         f"start = {season.start.isoformat()}",

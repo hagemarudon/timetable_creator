@@ -106,3 +106,17 @@ def test_parsed_by_app(out):
     assert problem.students["S010"].available == {Slot("水", 2)}
     result = solve(problem, time_limit=10)
     assert not result.unassigned
+
+
+def test_new_term_ignores_old_responses():
+    """「新しい期を始める」より前の回答（1学期など）は使わない。"""
+    script = r"""
+const g = require(process.argv[1]);
+const r = (time, name) => ({time, answers: {[g.Q.name]: name}});
+console.log(JSON.stringify([g.termFilter_([r(1, '前の期'), r(10, '今の期')], 5), g.termFilter_([r(1, 'a')], 0)]));
+"""
+    res = subprocess.run(["node", "-e", script, str(ROOT / "google_forms" / "forms.gs")],
+                         capture_output=True, text=True, check=True)
+    new_term, no_term = json.loads(res.stdout)
+    assert [x["answers"]["氏名"] for x in new_term["kept"]] == ["今の期"] and new_term["dropped"] == 1
+    assert len(no_term["kept"]) == 1 and no_term["dropped"] == 0

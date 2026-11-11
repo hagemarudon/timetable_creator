@@ -235,7 +235,7 @@ def _schedule_text(problem: Problem, ls, view: View) -> str:
 def schedule_pages(problem: Problem) -> list[tuple[str, list[str]]]:
     """スケジュール表のシート名と、そのシートに並べる日。
 
-    通常期は1枚に全曜日を並べる。講習期は日付が多いので、1週間（月〜日）ごとに1枚にする。
+    通常授業は1枚に全曜日を並べる。講習は日付が多いので、1週間（月〜日）ごとに1枚にする。
     """
     s = problem.settings
     if not s.is_season:
@@ -253,9 +253,9 @@ def schedule_pages(problem: Problem) -> list[tuple[str, list[str]]]:
 
 def write_schedule_sheet(ws, problem: Problem, result: Result, view: View = View(),
                          days: list[str] | None = None) -> None:
-    """紙のスケジュール表と同じ形で書く。days を渡すと、その日だけを並べる（講習期の1週間分など）。
+    """紙のスケジュール表と同じ形で書く。days を渡すと、その日だけを並べる（講習の1週間分など）。
 
-    曜日（講習期は日付）ごとに「時刻の列＋その日に授業がある講師の列＋予備の列」を横に並べ、
+    曜日（講習は日付）ごとに「時刻の列＋その日に授業がある講師の列＋予備の列」を横に並べ、
     行は30分刻みの時刻、授業はコマの時間ぶんの行をまとめた縦長の1マスに縦書きで書く。
     上に曜日と講師名、下にも講師名と曜日を入れる（講師名も縦書き）。
     """
@@ -357,7 +357,7 @@ def to_xlsx(problem: Problem, result: Result, view: View = View()) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         # 最初のシートは紙のスケジュール表と同じ形（講師列の表を、時刻の行とまとめたマスで書いたもの）
-        # 講習期は1週間ごとに1枚
+        # 講習は1週間ごとに1枚
         for name, days in schedule_pages(problem):
             write_schedule_sheet(xw.book.create_sheet(name), problem, result, view, days)
         for name, df in all_sheets(problem, result, view).items():

@@ -82,10 +82,11 @@ koma_rows = [{"コマ": k.no, "開始": k.start, "終了": k.end} for k in setti
 
 out = Path(args[0] if args else "sample/サンプル入力_講習期.xlsx" if SEASON else "sample/サンプル入力.xlsx")
 out.parent.mkdir(parents=True, exist_ok=True)
+prefix = "講習_" if SEASON else ""  # 講習のシートは名前に「講習」を入れる
 with pd.ExcelWriter(out, engine="openpyxl") as xw:
-    pd.DataFrame(koma_rows).to_excel(xw, sheet_name="コマ設定", index=False)
-    pd.DataFrame(req_rows).to_excel(xw, sheet_name="生徒_受講希望", index=False)
-    pd.DataFrame(s_av_rows).to_excel(xw, sheet_name="生徒_空き時間", index=False)
-    pd.DataFrame(t_rows).to_excel(xw, sheet_name="講師_担当可能科目", index=False)
-    pd.DataFrame(t_av_rows).to_excel(xw, sheet_name="講師_空き時間", index=False)
+    pd.DataFrame(koma_rows).to_excel(xw, sheet_name=prefix + "コマ設定", index=False)
+    pd.DataFrame(req_rows).to_excel(xw, sheet_name=prefix + "生徒_受講希望", index=False)
+    pd.DataFrame(s_av_rows).to_excel(xw, sheet_name=prefix + "生徒_空き時間", index=False)
+    pd.DataFrame(t_rows).to_excel(xw, sheet_name=prefix + "講師_担当可能科目", index=False)
+    pd.DataFrame(t_av_rows).to_excel(xw, sheet_name=prefix + "講師_空き時間", index=False)
 print(f"{out} を作りました（生徒{len(s_av_rows)}人・受講希望{len(req_rows)}件・講師{len(t_rows)}人）")
